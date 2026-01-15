@@ -1,0 +1,14 @@
+HTTP Server Benchmark Comparison
+Generated: Thu Jan 15 01:48:17 MSK 2026
+Test Duration: 30s
+Threads: 4
+Connections: 100
+
+C++ Server (io_uring): Port 8080
+Rust Tokio Server: Port 8081
+
+Results Summary:
+
+=== GET /echo?msg=test ===
+
+=== POST /echo ===

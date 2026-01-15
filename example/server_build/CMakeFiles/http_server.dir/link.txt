@@ -1,0 +1,2 @@
+/usr/bin/ar qc libhttp_server.a CMakeFiles/http_server.dir/read_iterator.cpp.o CMakeFiles/http_server.dir/io_uring.cpp.o CMakeFiles/http_server.dir/http_server.cpp.o CMakeFiles/http_server.dir/trie.cpp.o CMakeFiles/http_server.dir/http_error.cpp.o
+/usr/bin/ranlib libhttp_server.a

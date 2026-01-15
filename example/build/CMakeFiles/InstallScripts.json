@@ -1,0 +1,8 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/shfdis/httpserver/example/build/cmake_install.cmake",
+		"/home/shfdis/httpserver/example/build/server_build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

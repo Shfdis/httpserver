@@ -1,0 +1,6 @@
+/home/shfdis/httpserver/example/CMakeFiles/echo_server.dir
+/home/shfdis/httpserver/example/CMakeFiles/edit_cache.dir
+/home/shfdis/httpserver/example/CMakeFiles/rebuild_cache.dir
+/home/shfdis/httpserver/example/server_build/CMakeFiles/http_server.dir
+/home/shfdis/httpserver/example/server_build/CMakeFiles/edit_cache.dir
+/home/shfdis/httpserver/example/server_build/CMakeFiles/rebuild_cache.dir

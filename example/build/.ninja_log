@@ -1,0 +1,9 @@
+# ninja log v7
+4	203	1768430032348537704	server_build/CMakeFiles/http_server.dir/http_error.cpp.o	fc9e75f2b34d7b91
+4	831	1768430032346769616	server_build/CMakeFiles/http_server.dir/trie.cpp.o	2f6dd507e8cfe89f
+1	1016	1768430032343769606	server_build/CMakeFiles/http_server.dir/read_iterator.cpp.o	5ccb34275b242c09
+5	1175	1768430032349190871	CMakeFiles/echo_server.dir/main.cpp.o	cad8a8451b1753a3
+2	1959	1768430032344769609	server_build/CMakeFiles/http_server.dir/io_uring.cpp.o	736ff1c6de5ce7c6
+3	2134	1768430032345769613	server_build/CMakeFiles/http_server.dir/http_server.cpp.o	692c3207ac0e8b49
+2134	2186	1768430034476777121	server_build/libhttp_server.a	e888e405644ed7
+2187	2262	1768430034529777308	echo_server	324db1853219e53c
