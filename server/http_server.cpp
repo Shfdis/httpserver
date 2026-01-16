@@ -79,13 +79,13 @@ void Server::Process(IOUring &ring, int connectionFD) {
     iterator.ParseVariables(request);
     ++iterator;
     std::string protocol;
-    while (*iterator && *iterator != '\n') {
-      if (**iterator != '\r') {
-        protocol += **iterator;
+    while (iterator && *iterator != '\n') {
+      if (*iterator != '\r') {
+        protocol += *iterator;
       }
       ++iterator;
     }
-    if (!*iterator || protocol != "HTTP/1.1") {
+    if (!iterator || protocol != "HTTP/1.1") {
       throw HTTPError(400, "Invalid request");
     }
     ++iterator;
@@ -116,11 +116,11 @@ RespondType Server::GetHandler(RequestData &data, ReadIterator &iter) {
     throw HTTPError(400, "Invalid request");
   }
   auto current = &trie_.GetRoot();
-  while (*iter != std::nullopt && *iter != ' ' && *iter != '?') {
-    current = &current->Move(**iter);
+  while (iter && *iter != ' ' && *iter != '?') {
+    current = &current->Move(*iter);
     ++iter;
   }
-  if (*iter == std::nullopt) {
+  if (!iter) {
     throw HTTPError(400, "Invalid request");
   }
   if (!current->handlers[data.method]) {

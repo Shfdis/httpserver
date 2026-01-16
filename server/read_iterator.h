@@ -1,7 +1,6 @@
 #pragma once
 #include "request_data.h"
 #include <array>
-#include <optional>
 namespace HTTP {
 class IOUring;
 class ReadIterator {
@@ -11,6 +10,7 @@ private:
   size_t position_;
   size_t length_;
   int fileDescriptor_;
+  bool eof_ = false;
 
 public:
   ReadIterator(IOUring &ring, int fileDescriptor);
@@ -20,8 +20,9 @@ public:
   void ParseHeaders(RequestData &data);
   Method ParseMethod();
   void ParseBody(RequestData &data);
-  std::optional<char> operator*();
-  using value_type = std::optional<char>;
+  char operator*();
+  explicit operator bool() const { return !eof_; }
+  using value_type = char;
   using difference_type = std::ptrdiff_t;
 };
 } // namespace HTTP

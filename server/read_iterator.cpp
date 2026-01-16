@@ -2,7 +2,6 @@
 #include "http_error.h"
 #include "io_uring.h"
 #include "request_data.h"
-#include <optional>
 #include <string_view>
 namespace HTTP {
 ReadIterator::ReadIterator(IOUring &ring, int fileDescriptor) : ring_(ring) {
@@ -10,14 +9,17 @@ ReadIterator::ReadIterator(IOUring &ring, int fileDescriptor) : ring_(ring) {
   length_ = result.get();
   position_ = 0;
   fileDescriptor_ = fileDescriptor;
+  eof_ = (length_ == 0);
 }
-std::optional<char> ReadIterator::operator*() {
+char ReadIterator::operator*() {
+  if (eof_) return '\0';
   if (position_ >= length_) {
     auto result = ring_.Read(fileDescriptor_, buffer_);
     length_ = result.get();
     position_ = 0;
     if (length_ == 0) {
-      return std::nullopt;
+      eof_ = true;
+      return '\0';
     }
   }
   return buffer_[position_];
@@ -30,9 +32,8 @@ void ReadIterator::operator++(int) { position_++; }
 Method ReadIterator::ParseMethod() {
   std::string methodString;
   int count{0};
-  while (count < 5 && **this != std::nullopt && **this != ' ') {
-    auto c = **this;
-    methodString += (*c);
+  while (count < 5 && *this && **this != ' ') {
+    methodString += **this;
     count++;
     ++*this;
   }
@@ -64,7 +65,7 @@ void ReadIterator::ParseVariables(RequestData &request) {
     return;
   }
   ++*this;
-  while (**this != std::nullopt && **this != ' ') {
+  while (*this && **this != ' ') {
     if (current == Name) {
       if (**this == '=') {
         if (name == "") {
@@ -74,7 +75,7 @@ void ReadIterator::ParseVariables(RequestData &request) {
         request.params[name] = "";
         value = &request.params[name];
       } else {
-        name.push_back(***this);
+        name.push_back(**this);
       }
     } else {
       if (**this == '&') {
@@ -82,12 +83,12 @@ void ReadIterator::ParseVariables(RequestData &request) {
         value = nullptr;
         current = Name;
       } else {
-        value->push_back(***this);
+        value->push_back(**this);
       }
     }
     ++*this;
   }
-  if (**this == std::nullopt) {
+  if (!*this) {
     throw HTTPError(400, "Empty parameter name");
   }
 }
@@ -96,7 +97,7 @@ void ReadIterator::ParseHeaders(RequestData &request) {
   std::string name;
   std::string *value;
   char last = 'a';
-  while (**this != std::nullopt) {
+  while (*this) {
     if (**this == '\r') {
       ++*this;
       continue;
@@ -113,7 +114,7 @@ void ReadIterator::ParseHeaders(RequestData &request) {
         request.headers[name] = "";
         value = &request.headers[name];
       } else {
-        name.push_back(***this);
+        name.push_back(**this);
       }
     } else {
       if (**this == '\n') {
@@ -121,13 +122,13 @@ void ReadIterator::ParseHeaders(RequestData &request) {
         value = nullptr;
         current = Name;
       } else {
-        value->push_back(***this);
+        value->push_back(**this);
       }
     }
-    last = ***this;
+    last = **this;
     ++*this;
   }
-  if (**this == std::nullopt) {
+  if (!*this) {
     throw HTTPError(400, "Invalid message");
   }
 }
@@ -137,10 +138,9 @@ void ReadIterator::ParseBody(RequestData &request) {
     try {
       size_t length = std::stoul(it->second);
       for (size_t i = 0; i < length; ++i) {
-        auto c = **this;
-        if (c == std::nullopt)
+        if (!*this)
           break;
-        request.body.push_back(*c);
+        request.body.push_back(**this);
         ++*this;
       }
     } catch (...) {
@@ -159,8 +159,8 @@ void ReadIterator::ParseBody(RequestData &request) {
     return;
   }
 
-  while (**this) {
-    request.body.push_back(***this);
+  while (*this) {
+    request.body.push_back(**this);
     ++*this;
   }
 }
