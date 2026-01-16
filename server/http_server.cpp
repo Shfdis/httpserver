@@ -1,6 +1,6 @@
 #include "http_server.h"
 #include "http_error.h"
-#include "io_uring.h"
+#include "iasio.h"
 #include "read_iterator.h"
 #include "request_data.h"
 #include "trie.h"
@@ -135,7 +135,12 @@ void ServerBuilder::AddRequest(Method method, std::string_view path,
                                RespondType respond) {
   server_.trie_.AddRequest(method, respond, path);
 }
-Server ServerBuilder::Build() { return std::move(server_); }
+Server ServerBuilder::Build() {
+  if (!server_.ring_) {
+    throw std::runtime_error("Must supply async io");
+  }
+  return std::move(server_);
+}
 
 void Server::Start() {
   socketFD_ = socket(AF_INET, SOCK_STREAM, 0);
@@ -163,3 +168,4 @@ void Server::Start() {
     }
   });
 }
+void ServerBuilder::SetAsio(IAsioPtr ptr) { server_.ring_ = std::move(ptr); }

@@ -1,4 +1,5 @@
 #pragma once
+#include "iasio.h"
 #include "mpsc_queue.h"
 #include <array>
 #include <atomic>
@@ -9,7 +10,7 @@
 #include <thread>
 #define QUEUE_DEPTH 1024
 namespace HTTP {
-class IOUring {
+class IOUring : IAsio {
 private:
   struct Entry {
     enum { ACCEPT, READ, WRITE } type;

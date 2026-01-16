@@ -1,16 +1,15 @@
 #pragma once
-#include "io_uring.h"
+#include "iasio.h"
 #include "read_iterator.h"
 #include "request_data.h"
 #include "trie.h"
 #include <deque>
 #include <future>
-#include <memory>
 namespace HTTP {
 class Server {
 private:
   std::deque<std::future<void>> requestFutures_;
-  std::unique_ptr<IOUring> ring_ = std::make_unique<IOUring>();
+  IAsioPtr ring_;
   int socketFD_{-1};
   int port_{0};
   Trie trie_;
@@ -34,6 +33,7 @@ private:
   int port_;
 
 public:
+  void SetAsio(IAsioPtr asio);
   void SetPort(int port);
   void AddRequest(Method method, std::string_view path, RespondType respond);
   Server Build();

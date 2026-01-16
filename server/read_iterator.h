@@ -1,18 +1,19 @@
 #pragma once
-#include "io_uring.h"
+#include "iasio.h"
 #include "request_data.h"
+#include <array>
 #include <optional>
 namespace HTTP {
 class ReadIterator {
 private:
-  IOUring &ring_;
+  IAsio &ring_;
   std::array<char, 256> buffer_;
   size_t position_;
   size_t length_;
   int fileDescriptor_;
 
 public:
-  ReadIterator(IOUring &ring_, int fileDescriptor);
+  ReadIterator(IAsio &ring_, int fileDescriptor);
   ReadIterator &operator++();
   void operator++(int);
   void ParseVariables(RequestData &data);

@@ -1,10 +1,11 @@
 #include "read_iterator.h"
 #include "http_error.h"
+#include "iasio.h"
 #include "request_data.h"
 #include <optional>
 #include <string_view>
 namespace HTTP {
-ReadIterator::ReadIterator(IOUring &ring, int fileDescriptor) : ring_(ring) {
+ReadIterator::ReadIterator(IAsio &ring, int fileDescriptor) : ring_(ring) {
   auto result = ring_.Read(fileDescriptor, buffer_);
   length_ = result.get();
   position_ = 0;
@@ -25,9 +26,7 @@ ReadIterator &ReadIterator::operator++() {
   position_++;
   return *this;
 }
-void ReadIterator::operator++(int) {
-  position_++;
-}
+void ReadIterator::operator++(int) { position_++; }
 Method ReadIterator::ParseMethod() {
   std::string methodString;
   int count{0};
@@ -139,23 +138,25 @@ void ReadIterator::ParseBody(RequestData &request) {
       size_t length = std::stoul(it->second);
       for (size_t i = 0; i < length; ++i) {
         auto c = **this;
-        if (c == std::nullopt) break;
+        if (c == std::nullopt)
+          break;
         request.body.push_back(*c);
         ++*this;
       }
-    } catch (...) {}
+    } catch (...) {
+    }
     return;
   }
-  
+
   auto it2 = request.headers.find("Transfer-Encoding");
   if (it2 != request.headers.end() && it2->second == "chunked") {
-      // Chunked encoding not implemented in this simple server
-      return;
+    // Chunked encoding not implemented in this simple server
+    return;
   }
 
   // If no Content-Length and not chunked, assume no body for GET/DELETE/etc.
   if (request.method == GET || request.method == DELETE) {
-      return;
+    return;
   }
 
   while (**this) {
