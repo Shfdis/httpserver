@@ -1,1 +1,0 @@
-/usr/bin/c++ -Wl,--dependency-file=CMakeFiles/echo_server.dir/link.d CMakeFiles/echo_server.dir/main.cpp.o -o echo_server  server_build/libhttp_server.a -luring

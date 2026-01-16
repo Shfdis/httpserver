@@ -37,16 +37,15 @@ void Server::Accept() {
   sockaddr_in address{};
   address.sin_family = AF_INET;
   socklen_t addr_len = sizeof(address);
-  int connectionFD =
-      accept(socketFD_, (sockaddr *)&address, (socklen_t *)&addr_len);
+  int connectionFD = ring_->Accept(socketFD_).get();
   if (connectionFD == -1) {
     if (stopFlag_.load()) {
       return;
     }
     throw std::runtime_error("Failed to open connection");
   }
-  requestFutures_.push_back(
-      std::async(std::launch::async, [this, connectionFD] { Process(connectionFD); }));
+  requestFutures_.push_back(std::async(
+      std::launch::async, [this, connectionFD] { Process(connectionFD); }));
   while (!requestFutures_.empty() &&
          requestFutures_.front().wait_for(std::chrono::milliseconds(0)) ==
              std::future_status::ready) {
@@ -136,9 +135,7 @@ void ServerBuilder::AddRequest(Method method, std::string_view path,
                                RespondType respond) {
   server_.trie_.AddRequest(method, respond, path);
 }
-Server ServerBuilder::Build() {
-  return std::move(server_);
-}
+Server ServerBuilder::Build() { return std::move(server_); }
 
 void Server::Start() {
   socketFD_ = socket(AF_INET, SOCK_STREAM, 0);
@@ -146,8 +143,8 @@ void Server::Start() {
     throw std::runtime_error("Could not open socket");
   }
   int reuse = 1;
-  if (setsockopt(socketFD_, SOL_SOCKET, SO_REUSEADDR, &reuse,
-                 sizeof(reuse)) == -1) {
+  if (setsockopt(socketFD_, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) ==
+      -1) {
     throw std::runtime_error("Could not set socket options");
   }
   sockaddr_in address{};

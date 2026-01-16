@@ -1,0 +1,39 @@
+# Build directories
+build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.d
+*.gcm
+
+# Executables
+echo_server
+
+# IDE/Editor
+.cache/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Rust build
+target/
+Cargo.lock
+
+# Benchmark results (optional - keep if you want history)
+benchmarks/results/
+
+# gcm cache
+gcm.cache/
+
+# CMake generated
+server_build/

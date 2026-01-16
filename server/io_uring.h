@@ -1,23 +1,31 @@
 #pragma once
+#include "mpsc_queue.h"
 #include <array>
 #include <atomic>
 #include <future>
 #include <liburing.h>
 #include <liburing/io_uring.h>
-#include <mutex>
+#include <optional>
 #include <thread>
-#include <unordered_map>
-#define QUEUE_DEPTH 64
+#define QUEUE_DEPTH 1024
 namespace HTTP {
 class IOUring {
 private:
-  std::mutex submitMut;
-  std::mutex promiseMut;
+  struct Entry {
+    enum { ACCEPT, READ, WRITE } type;
+    int fd;
+    std::optional<const char *> toWrite;
+    std::optional<char *> toRead;
+    std::optional<size_t> len;
+  };
+  MPSCQueue<Entry> queue_;
   io_uring ring_;
-  std::unordered_map<int, std::promise<int>> fdToPromise_;
+  std::array<std::optional<std::promise<int>>, 1025> fdToPromise_;
   std::atomic<bool> stopToken_ = false;
-  std::thread readerThread_;
+  std::atomic_uint64_t inProcess_ = 0;
+  std::thread workerThread_;
   void ProcessCalls();
+  void AddEntries();
   void SubmitEntry(int *value);
 
 public:
@@ -26,5 +34,6 @@ public:
   IOUring &operator=(IOUring &&rhs);
   std::future<int> Read(int fileDescriptor, std::array<char, 256> &buffer);
   std::future<int> Write(int fileDescriptor, const std::string &data);
+  std::future<int> Accept(int fileDescriptor);
 };
 } // namespace HTTP
