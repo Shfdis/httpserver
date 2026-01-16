@@ -5,7 +5,7 @@
 int main() {
   HTTP::ServerBuilder builder;
   builder.SetPort(8080);
-  builder.SetThreads(4);
+  builder.SetThreads(22);
   builder.AddRequest(HTTP::POST, "/echo", [](const HTTP::RequestData &request) {
     HTTP::ResponseData response;
     response.status = 200;
