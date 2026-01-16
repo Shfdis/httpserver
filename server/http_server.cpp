@@ -1,27 +1,26 @@
 #include "http_server.h"
 #include "http_error.h"
-#include "iasio.h"
+#include "io_uring.h"
 #include "read_iterator.h"
 #include "request_data.h"
 #include "trie.h"
-#include <chrono>
-#include <future>
 #include <netinet/in.h>
 #include <sstream>
 #include <stdexcept>
 #include <sys/socket.h>
 #include <unistd.h>
-using namespace HTTP;
+namespace HTTP {
+
 Server::Server(Server &&rhs) {
-  ring_ = std::move(rhs.ring_);
   trie_ = std::move(rhs.trie_);
-  requestFutures_ = std::move(rhs.requestFutures_);
   socketFD_ = rhs.socketFD_;
   port_ = rhs.port_;
+  numThreads_ = rhs.numThreads_;
   stopFlag_.store(rhs.stopFlag_.load());
-  main_ = std::move(rhs.main_);
+  workerThreads_ = std::move(rhs.workerThreads_);
   rhs.socketFD_ = -1;
 }
+
 Server::~Server() {
   stopFlag_ = true;
   if (socketFD_ != -1) {
@@ -29,30 +28,28 @@ Server::~Server() {
     close(socketFD_);
     socketFD_ = -1;
   }
-  if (main_.valid()) {
-    main_.wait();
-  }
-}
-void Server::Accept() {
-  sockaddr_in address{};
-  address.sin_family = AF_INET;
-  socklen_t addr_len = sizeof(address);
-  int connectionFD = ring_->Accept(socketFD_).get();
-  if (connectionFD == -1) {
-    if (stopFlag_.load()) {
-      return;
+  for (auto &t : workerThreads_) {
+    if (t.joinable()) {
+      t.join();
     }
-    throw std::runtime_error("Failed to open connection");
-  }
-  requestFutures_.push_back(std::async(
-      std::launch::async, [this, connectionFD] { Process(connectionFD); }));
-  while (!requestFutures_.empty() &&
-         requestFutures_.front().wait_for(std::chrono::milliseconds(0)) ==
-             std::future_status::ready) {
-    requestFutures_.pop_front();
   }
 }
-void Server::WriteResponse(int connectionFD, const ResponseData &data) {
+
+void Server::WorkerLoop() {
+  IOUring ring;
+  while (!stopFlag_.load()) {
+    int connectionFD = ring.Accept(socketFD_).get();
+    if (connectionFD < 0) {
+      if (stopFlag_.load()) {
+        return;
+      }
+      continue;
+    }
+    Process(ring, connectionFD);
+  }
+}
+
+void Server::WriteResponse(IOUring &ring, int connectionFD, const ResponseData &data) {
   std::stringstream text;
   text << "HTTP/1.1 " << data.status << ' '
        << (data.status / 100 == 2 ? "OK" : "ERROR") << "\r\n";
@@ -69,13 +66,13 @@ void Server::WriteResponse(int connectionFD, const ResponseData &data) {
   text << "\r\n";
   text << data.body;
   std::string final = text.str();
-  auto future = ring_->Write(connectionFD, final);
-  future.get();
+  ring.Write(connectionFD, final).get();
 }
-void Server::Process(int connectionFD) {
+
+void Server::Process(IOUring &ring, int connectionFD) {
   ResponseData response;
   try {
-    ReadIterator iterator(*ring_, connectionFD);
+    ReadIterator iterator(ring, connectionFD);
     RequestData request;
     request.method = iterator.ParseMethod();
     auto handler = GetHandler(request, iterator);
@@ -104,11 +101,12 @@ void Server::Process(int connectionFD) {
     response.body = error.what();
   } catch (...) {
     response.status = 500;
-    response.body = "What the actual fuck";
+    response.body = "Internal server error";
   }
-  WriteResponse(connectionFD, response);
+  WriteResponse(ring, connectionFD, response);
   close(connectionFD);
 }
+
 RespondType Server::GetHandler(RequestData &data, ReadIterator &iter) {
   if (*iter != ' ') {
     throw HTTPError(400, "Invalid request");
@@ -130,14 +128,19 @@ RespondType Server::GetHandler(RequestData &data, ReadIterator &iter) {
   }
   return *current->handlers[data.method];
 }
-void ServerBuilder::SetPort(int port_) { server_.port_ = port_; }
+
+void ServerBuilder::SetPort(int port) { server_.port_ = port; }
+
+void ServerBuilder::SetThreads(int numThreads) { server_.numThreads_ = numThreads; }
+
 void ServerBuilder::AddRequest(Method method, std::string_view path,
                                RespondType respond) {
   server_.trie_.AddRequest(method, respond, path);
 }
+
 Server ServerBuilder::Build() {
-  if (!server_.ring_) {
-    throw std::runtime_error("Must supply async io");
+  if (server_.numThreads_ < 1) {
+    server_.numThreads_ = 1;
   }
   return std::move(server_);
 }
@@ -148,8 +151,7 @@ void Server::Start() {
     throw std::runtime_error("Could not open socket");
   }
   int reuse = 1;
-  if (setsockopt(socketFD_, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) ==
-      -1) {
+  if (setsockopt(socketFD_, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) == -1) {
     throw std::runtime_error("Could not set socket options");
   }
   sockaddr_in address{};
@@ -162,10 +164,9 @@ void Server::Start() {
   if (listen(socketFD_, SOMAXCONN) == -1) {
     throw std::runtime_error("Could not listen on socket");
   }
-  main_ = std::async(std::launch::async, [this] {
-    while (!stopFlag_.load()) {
-      Accept();
-    }
-  });
+  for (int i = 0; i < numThreads_; ++i) {
+    workerThreads_.emplace_back([this] { WorkerLoop(); });
+  }
 }
-void ServerBuilder::SetAsio(IAsioPtr ptr) { server_.ring_ = std::move(ptr); }
+
+} // namespace HTTP

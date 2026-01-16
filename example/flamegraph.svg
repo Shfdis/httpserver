@@ -1,0 +1,1278 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1400" height="678" onload="init(evt)" viewBox="0 0 1400 678" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1400.0" height="678.0" fill="url(#background)"  />
+<text id="title" x="700.00" y="24" >echo_server CPU Flamegraph</text>
+<text id="details" x="10.00" y="661" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1290.00" y="24" >Search</text>
+<text id="ignorecase" x="1374.00" y="24" >ic</text>
+<text id="matched" x="1290.00" y="661" > </text>
+<g id="frames">
+<g >
+<title>void std::thread::_Invoker&lt;std::tuple&lt;HTTP::IOUring::IOUring (718,138,099 samples, 98.93%)</title><rect x="10.0" y="517" width="1365.2" height="15.0" fill="rgb(227,104,24)" rx="2" ry="2" />
+<text  x="13.00" y="527.5" >void std::thread::_Invoker&lt;std::tuple&lt;HTTP::IOUring::IOUring</text>
+</g>
+<g >
+<title>std::enable_if&lt;std::chrono::__is_duration&lt;std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt; &gt;::value, std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt; &gt;::type std::chrono::duration_cast&lt;std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt;, long, std::ratio&lt;1l, 1000l&gt; &gt; (4,193,310 samples, 0.58%)</title><rect x="1252.9" y="421" width="7.9" height="15.0" fill="rgb(222,82,19)" rx="2" ry="2" />
+<text  x="1255.87" y="431.5" ></text>
+</g>
+<g >
+<title>std::__future_base::_State_baseV2::_Setter&lt;int, int const&amp;&gt;::operator (31,840,573 samples, 4.39%)</title><rect x="585.6" y="197" width="60.6" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="588.64" y="207.5" >std::_..</text>
+</g>
+<g >
+<title>std::enable_if&lt;std::chrono::__is_duration&lt;std::chrono::duration&lt;long, std::ratio&lt;1l, 1l&gt; &gt; &gt;::value, std::chrono::duration&lt;long, std::ratio&lt;1l, 1l&gt; &gt; &gt;::type std::chrono::duration_cast&lt;std::chrono::duration&lt;long, std::ratio&lt;1l, 1l&gt; &gt;, long, std::ratio&lt;1l, 1000000000l&gt; &gt; (10,797,209 samples, 1.49%)</title><rect x="1136.2" y="389" width="20.5" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1139.18" y="399.5" ></text>
+</g>
+<g >
+<title>std::_Function_handler&lt;std::unique_ptr&lt;std::__future_base::_Result_base, std::__future_base::_Result_base::_Deleter&gt;  (4,131,101 samples, 0.57%)</title><rect x="837.6" y="389" width="7.9" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="840.61" y="399.5" ></text>
+</g>
+<g >
+<title>void std::call_once&lt;void  (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="437" width="5.1" height="15.0" fill="rgb(222,82,19)" rx="2" ry="2" />
+<text  x="1378.21" y="447.5" ></text>
+</g>
+<g >
+<title>std::__shared_ptr_access&lt;std::__future_base::_State_baseV2,  (5,143,455 samples, 0.71%)</title><rect x="877.3" y="389" width="9.8" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="880.28" y="399.5" ></text>
+</g>
+<g >
+<title>std::unique_ptr&lt;std::__future_base::_Result&lt;int&gt;, std::__future_base::_Result_base::_Deleter&gt;::operator (5,340,411 samples, 0.74%)</title><rect x="617.7" y="181" width="10.1" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="620.67" y="191.5" ></text>
+</g>
+<g >
+<title>std::mutex::unlock (22,403,904 samples, 3.09%)</title><rect x="1332.6" y="421" width="42.6" height="15.0" fill="rgb(227,105,25)" rx="2" ry="2" />
+<text  x="1335.62" y="431.5" >std:..</text>
+</g>
+<g >
+<title>io_uring_wait_cqes (45,310,178 samples, 6.24%)</title><rect x="357.0" y="437" width="86.1" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="360.00" y="447.5" >io_uring_w..</text>
+</g>
+<g >
+<title>std::__shared_ptr_access&lt;std::__future_base::_State_baseV2,  (12,912,491 samples, 1.78%)</title><rect x="862.5" y="405" width="24.6" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="865.51" y="415.5" >s..</text>
+</g>
+<g >
+<title>std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt;::count (10,739,525 samples, 1.48%)</title><rect x="1226.2" y="405" width="20.4" height="15.0" fill="rgb(222,80,19)" rx="2" ry="2" />
+<text  x="1229.23" y="415.5" ></text>
+</g>
+<g >
+<title>void std::call_once&lt;void  (158,552,250 samples, 21.84%)</title><rect x="508.0" y="405" width="301.4" height="15.0" fill="rgb(222,82,19)" rx="2" ry="2" />
+<text  x="510.95" y="415.5" >void std::call_once&lt;void </text>
+</g>
+<g >
+<title>std::tuple_element&lt;1ul, std::tuple&lt;std::__future_base::_Result&lt;int&gt;*, std::__future_base::_Result_base::_Deleter&gt; &gt;::type&amp; std::get&lt;1ul, std::__future_base::_Result&lt;int&gt;*, std::__future_base::_Result_base::_Deleter&gt; (6,492,157 samples, 0.89%)</title><rect x="681.9" y="165" width="12.3" height="15.0" fill="rgb(207,13,3)" rx="2" ry="2" />
+<text  x="684.87" y="175.5" ></text>
+</g>
+<g >
+<title>std::atomic&lt;bool&gt;::operator bool (5,783,009 samples, 0.80%)</title><rect x="963.7" y="405" width="11.0" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="966.73" y="415.5" ></text>
+</g>
+<g >
+<title>std::tuple&lt;std::__future_base::_Result_base*, std::__future_base::_Result_base::_Deleter&gt;::tuple&lt;std::__future_base::_Result_base*&amp;, std::__future_base::_Result_base::_Deleter&gt; (5,687,989 samples, 0.78%)</title><rect x="653.5" y="165" width="10.8" height="15.0" fill="rgb(228,108,26)" rx="2" ry="2" />
+<text  x="656.50" y="175.5" ></text>
+</g>
+<g >
+<title>std::unique_ptr&lt;std::__future_base::_Result_base, std::__future_base::_Result_base::_Deleter&gt;::swap (31,547,819 samples, 4.35%)</title><rect x="711.5" y="261" width="60.0" height="15.0" fill="rgb(232,128,30)" rx="2" ry="2" />
+<text  x="714.52" y="271.5" >std::u..</text>
+</g>
+<g >
+<title>std::__future_base::_Task_setter&lt;std::unique_ptr&lt;std::__future_base::_Result&lt;void&gt;, std::__future_base::_Result_base::_Deleter&gt;, std::thread::_Invoker&lt;std::tuple&lt;HTTP::Server::Start (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="229" width="5.1" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="1378.21" y="239.5" ></text>
+</g>
+<g >
+<title>void std::__invoke_impl&lt;void, void  (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="325" width="5.1" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="1378.21" y="335.5" ></text>
+</g>
+<g >
+<title>std::enable_if&lt;std::__and_&lt;std::__not_&lt;std::__is_tuple_like&lt;std::__future_base::_Result_base*&gt; &gt;, std::is_move_constructible&lt;std::__future_base::_Result_base*&gt;, std::is_move_assignable&lt;std::__future_base::_Result_base*&gt; &gt;::value, void&gt;::type std::swap&lt;std::__future_base::_Result_base*&gt; (5,006,938 samples, 0.69%)</title><rect x="762.0" y="245" width="9.5" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="764.98" y="255.5" ></text>
+</g>
+<g >
+<title>bool std::condition_variable::wait_until&lt;std::chrono::_V2::steady_clock, std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt;, HTTP::IOUring::IOUring (132,615,352 samples, 18.27%)</title><rect x="924.2" y="437" width="252.1" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="927.17" y="447.5" >bool std::condition_variable::wai..</text>
+</g>
+<g >
+<title>[libc.so.6] (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="405" width="5.1" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1378.21" y="415.5" ></text>
+</g>
+<g >
+<title>std::atomic&lt;HTTP::MPSCQueue&lt;HTTP::IOUring::Entry&gt;::Node*&gt;::exchange (5,130,272 samples, 0.71%)</title><rect x="123.3" y="421" width="9.8" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="126.30" y="431.5" ></text>
+</g>
+<g >
+<title>std::__uniq_ptr_impl&lt;std::__future_base::_Result_base, std::__future_base::_Result_base::_Deleter&gt;::_M_ptr (12,698,404 samples, 1.75%)</title><rect x="718.9" y="229" width="24.2" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="721.94" y="239.5" >s..</text>
+</g>
+<g >
+<title>std::function&lt;std::unique_ptr&lt;std::__future_base::_Result_base, std::__future_base::_Result_base::_Deleter&gt;  (27,956,697 samples, 3.85%)</title><rect x="809.4" y="421" width="53.1" height="15.0" fill="rgb(241,170,40)" rx="2" ry="2" />
+<text  x="812.37" y="431.5" >std::..</text>
+</g>
+<g >
+<title>std::tuple_element&lt;0ul, std::tuple&lt;std::__future_base::_Result_base*, std::__future_base::_Result_base::_Deleter&gt; &gt;::type&amp; std::get&lt;0ul, std::__future_base::_Result_base*, std::__future_base::_Result_base::_Deleter&gt; (12,698,404 samples, 1.75%)</title><rect x="718.9" y="213" width="24.2" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="721.94" y="223.5" >s..</text>
+</g>
+<g >
+<title>std::chrono::_V2::steady_clock::now (5,560,014 samples, 0.77%)</title><rect x="1005.9" y="405" width="10.6" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="1008.93" y="415.5" ></text>
+</g>
+<g >
+<title>pthread_mutex_lock (6,984,023 samples, 0.96%)</title><rect x="1319.3" y="405" width="13.3" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="1322.34" y="415.5" ></text>
+</g>
+<g >
+<title>io_uring_prep_accept (3,487,566 samples, 0.48%)</title><rect x="227.0" y="437" width="6.6" height="15.0" fill="rgb(213,40,9)" rx="2" ry="2" />
+<text  x="229.96" y="447.5" ></text>
+</g>
+<g >
+<title>std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt;::count (3,422,294 samples, 0.47%)</title><rect x="1121.1" y="357" width="6.5" height="15.0" fill="rgb(222,80,19)" rx="2" ry="2" />
+<text  x="1124.07" y="367.5" ></text>
+</g>
+<g >
+<title>std::__condvar::wait_until (7,546,478 samples, 1.04%)</title><rect x="991.6" y="405" width="14.3" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="994.58" y="415.5" ></text>
+</g>
+<g >
+<title>std::operator&amp; (5,097,755 samples, 0.70%)</title><rect x="335.7" y="373" width="9.7" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="338.67" y="383.5" ></text>
+</g>
+<g >
+<title>std::__future_base::_Result&lt;int&gt;*&amp; std::__get_helper&lt;0ul, std::__future_base::_Result&lt;int&gt;*, std::__future_base::_Result_base::_Deleter&gt; (9,650,378 samples, 1.33%)</title><rect x="627.8" y="117" width="18.4" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="630.82" y="127.5" ></text>
+</g>
+<g >
+<title>std::common_type&lt;std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt;, std::chrono::duration&lt;long, std::ratio&lt;1l, 1l&gt; &gt; &gt;::type std::chrono::operator-&lt;long, std::ratio&lt;1l, 1000000000l&gt;, long, std::ratio&lt;1l, 1l&gt; &gt; (7,950,324 samples, 1.10%)</title><rect x="1121.1" y="373" width="15.1" height="15.0" fill="rgb(241,170,40)" rx="2" ry="2" />
+<text  x="1124.07" y="383.5" ></text>
+</g>
+<g >
+<title>std::function&lt;std::unique_ptr&lt;std::__future_base::_Result_base, std::__future_base::_Result_base::_Deleter&gt;  (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="293" width="5.1" height="15.0" fill="rgb(241,170,40)" rx="2" ry="2" />
+<text  x="1378.21" y="303.5" ></text>
+</g>
+<g >
+<title>auto std::chrono::operator&lt;=&gt;&lt;std::chrono::_V2::steady_clock, std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt;, std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt; &gt; (8,866,168 samples, 1.22%)</title><rect x="974.7" y="405" width="16.9" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="977.73" y="415.5" ></text>
+</g>
+<g >
+<title>std::__future_base::_Async_state_impl&lt;std::thread::_Invoker&lt;std::tuple&lt;HTTP::Server::Start (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="469" width="5.1" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1378.21" y="479.5" ></text>
+</g>
+<g >
+<title>std::unique_ptr&lt;std::__future_base::_Result_base, std::__future_base::_Result_base::_Deleter&gt;::unique_ptr&lt;std::__future_base::_Result&lt;int&gt;, std::__future_base::_Result_base::_Deleter, void&gt; (4,617,645 samples, 0.64%)</title><rect x="702.7" y="229" width="8.8" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="705.74" y="239.5" ></text>
+</g>
+<g >
+<title>std::__future_base::_State_baseV2::_M_set_result (169,599,464 samples, 23.36%)</title><rect x="486.9" y="421" width="322.5" height="15.0" fill="rgb(229,114,27)" rx="2" ry="2" />
+<text  x="489.95" y="431.5" >std::__future_base::_State_baseV2::_M_set_r..</text>
+</g>
+<g >
+<title>HTTP::Server::Accept (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="133" width="5.1" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1378.21" y="143.5" ></text>
+</g>
+<g >
+<title>std::unique_ptr&lt;std::__future_base::_Result&lt;int&gt;, std::__future_base::_Result_base::_Deleter&gt;::unique_ptr&lt;std::__future_base::_Result_base::_Deleter, void&gt; (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="85" width="5.1" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="1378.21" y="95.5" ></text>
+</g>
+<g >
+<title>std::operator&lt; (5,041,409 samples, 0.69%)</title><rect x="1260.8" y="437" width="9.6" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="1263.84" y="447.5" ></text>
+</g>
+<g >
+<title>std::__uniq_ptr_data&lt;std::__future_base::_Result_base, std::__future_base::_Result_base::_Deleter, true, true&gt;::__uniq_ptr_impl&lt;std::__future_base::_Result_base::_Deleter&gt; (5,687,989 samples, 0.78%)</title><rect x="653.5" y="197" width="10.8" height="15.0" fill="rgb(217,58,14)" rx="2" ry="2" />
+<text  x="656.50" y="207.5" ></text>
+</g>
+<g >
+<title>std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt; std::chrono::__duration_cast_impl&lt;std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt;, std::ratio&lt;1000000l, 1l&gt;, long, false, true&gt;::__cast&lt;long, std::ratio&lt;1l, 1000l&gt; &gt; (4,193,310 samples, 0.58%)</title><rect x="1252.9" y="405" width="7.9" height="15.0" fill="rgb(229,110,26)" rx="2" ry="2" />
+<text  x="1255.87" y="415.5" ></text>
+</g>
+<g >
+<title>std::once_flag::_Prepare_execution::_Prepare_execution&lt;std::call_once&lt;void  (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="389" width="5.1" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="1378.21" y="399.5" ></text>
+</g>
+<g >
+<title>std::_Tuple_impl&lt;0ul, std::__future_base::_Result_base*, std::__future_base::_Result_base::_Deleter&gt;::_Tuple_impl&lt;std::__future_base::_Result_base*&amp;, std::__future_base::_Result_base::_Deleter, void&gt; (5,687,989 samples, 0.78%)</title><rect x="653.5" y="149" width="10.8" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="656.50" y="159.5" ></text>
+</g>
+<g >
+<title>std::enable_if&lt;std::chrono::__is_duration&lt;std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt; &gt;::value, std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt; &gt;::type std::chrono::ceil&lt;std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt;, long, std::ratio&lt;1l, 1000l&gt; &gt; (4,193,310 samples, 0.58%)</title><rect x="1252.9" y="437" width="7.9" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="1255.87" y="447.5" ></text>
+</g>
+<g >
+<title>std::unique_ptr&lt;std::__future_base::_Result&lt;int&gt;, std::__future_base::_Result_base::_Deleter&gt;::unique_ptr (9,650,378 samples, 1.33%)</title><rect x="627.8" y="181" width="18.4" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="630.82" y="191.5" ></text>
+</g>
+<g >
+<title>io_uring_get_sqe (11,705,704 samples, 1.61%)</title><rect x="204.7" y="437" width="22.3" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="207.71" y="447.5" >i..</text>
+</g>
+<g >
+<title>void std::__invoke_impl&lt;void, void  (105,388,928 samples, 14.52%)</title><rect x="571.1" y="293" width="200.4" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="574.15" y="303.5" >void std::__invoke_impl&lt;vo..</text>
+</g>
+<g >
+<title>std::promise&lt;int&gt;::set_value (222,008,994 samples, 30.58%)</title><rect x="475.2" y="437" width="422.0" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="478.18" y="447.5" >std::promise&lt;int&gt;::set_value</text>
+</g>
+<g >
+<title>std::chrono::_V2::steady_clock::now (4,642,212 samples, 0.64%)</title><rect x="1295.9" y="453" width="8.8" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="1298.89" y="463.5" ></text>
+</g>
+<g >
+<title>HTTP::IOUring::AddEntries (137,632,874 samples, 18.96%)</title><rect x="10.0" y="453" width="261.6" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="13.00" y="463.5" >HTTP::IOUring::AddEntries</text>
+</g>
+<g >
+<title>pthread_once (147,386,280 samples, 20.30%)</title><rect x="520.7" y="389" width="280.2" height="15.0" fill="rgb(224,87,20)" rx="2" ry="2" />
+<text  x="523.71" y="399.5" >pthread_once</text>
+</g>
+<g >
+<title>std::enable_if&lt;is_invocable_r_v&lt;std::unique_ptr&lt;std::__future_base::_Result_base, std::__future_base::_Result_base::_Deleter&gt;, std::__future_base::_Task_setter&lt;std::unique_ptr&lt;std::__future_base::_Result&lt;void&gt;, std::__future_base::_Result_base::_Deleter&gt;, std::thread::_Invoker&lt;std::tuple&lt;HTTP::Server::Start (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="261" width="5.1" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="1378.21" y="271.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (720,830,381 samples, 99.30%)</title><rect x="10.0" y="597" width="1370.3" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="13.00" y="607.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>std::_Head_base&lt;0ul, std::__future_base::_Result&lt;int&gt;*, false&gt;::_M_head (5,340,411 samples, 0.74%)</title><rect x="617.7" y="69" width="10.1" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="620.67" y="79.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (720,830,381 samples, 99.30%)</title><rect x="10.0" y="581" width="1370.3" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="13.00" y="591.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>io_uring_prep_write (6,210,856 samples, 0.86%)</title><rect x="233.6" y="437" width="11.8" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="236.59" y="447.5" ></text>
+</g>
+<g >
+<title>std::once_flag::_Prepare_execution::_Prepare_execution&lt;std::call_once&lt;void  (110,485,054 samples, 15.22%)</title><rect x="561.5" y="357" width="210.0" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="564.46" y="367.5" >std::once_flag::_Prepare_ex..</text>
+</g>
+<g >
+<title>[unknown] (5,087,606 samples, 0.70%)</title><rect x="1380.3" y="565" width="9.7" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1383.33" y="575.5" ></text>
+</g>
+<g >
+<title>syscall (5,348,972 samples, 0.74%)</title><rect x="887.1" y="421" width="10.1" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="890.06" y="431.5" ></text>
+</g>
+<g >
+<title>std::__uniq_ptr_impl&lt;std::__future_base::_Result&lt;int&gt;, std::__future_base::_Result_base::_Deleter&gt;::_M_ptr (5,340,411 samples, 0.74%)</title><rect x="617.7" y="133" width="10.1" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="620.67" y="143.5" ></text>
+</g>
+<g >
+<title>std::__atomic_base&lt;unsigned long&gt;::operator unsigned long (6,417,323 samples, 0.88%)</title><rect x="951.5" y="405" width="12.2" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="954.53" y="415.5" ></text>
+</g>
+<g >
+<title>unsigned int std::atomic_load_explicit&lt;unsigned int&gt; (6,546,344 samples, 0.90%)</title><rect x="204.7" y="373" width="12.5" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="207.71" y="383.5" ></text>
+</g>
+<g >
+<title>__vdso_clock_gettime (5,050,505 samples, 0.70%)</title><rect x="1196.7" y="405" width="9.6" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1199.65" y="415.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (14,153,476 samples, 1.95%)</title><rect x="1348.3" y="405" width="26.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1351.30" y="415.5" >[..</text>
+</g>
+<g >
+<title>std::unique_ptr&lt;std::__future_base::_Result_base, std::__future_base::_Result_base::_Deleter&gt;::unique_ptr&lt;std::__future_base::_Result&lt;int&gt;, std::__future_base::_Result_base::_Deleter, void&gt; (25,901,697 samples, 3.57%)</title><rect x="653.5" y="213" width="49.2" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="656.50" y="223.5" >std:..</text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::mutex&gt;::~unique_lock (22,403,904 samples, 3.09%)</title><rect x="1332.6" y="453" width="42.6" height="15.0" fill="rgb(216,50,12)" rx="2" ry="2" />
+<text  x="1335.62" y="463.5" >std:..</text>
+</g>
+<g >
+<title>std::thread::_State_impl&lt;std::thread::_Invoker&lt;std::tuple&lt;HTTP::IOUring::IOUring (718,138,099 samples, 98.93%)</title><rect x="10.0" y="549" width="1365.2" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="13.00" y="559.5" >std::thread::_State_impl&lt;std::thread::_Invoker&lt;std::tuple&lt;HTTP::IOUring::IOUring</text>
+</g>
+<g >
+<title>std::__uniq_ptr_impl&lt;std::__future_base::_Result&lt;int&gt;, std::__future_base::_Result_base::_Deleter&gt;::__uniq_ptr_impl (9,650,378 samples, 1.33%)</title><rect x="627.8" y="149" width="18.4" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="630.82" y="159.5" ></text>
+</g>
+<g >
+<title>std::tuple_element&lt;0ul, std::tuple&lt;std::__future_base::_Result&lt;int&gt;*, std::__future_base::_Result_base::_Deleter&gt; &gt;::type&amp; std::get&lt;0ul, std::__future_base::_Result&lt;int&gt;*, std::__future_base::_Result_base::_Deleter&gt; (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="37" width="5.1" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="1378.21" y="47.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (17,291,120 samples, 2.38%)</title><rect x="90.4" y="421" width="32.9" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="93.43" y="431.5" >[l..</text>
+</g>
+<g >
+<title>std::unique_ptr&lt;std::__future_base::_Result&lt;int&gt;, std::__future_base::_Result_base::_Deleter&gt;::release (4,488,120 samples, 0.62%)</title><rect x="694.2" y="197" width="8.5" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="697.21" y="207.5" ></text>
+</g>
+<g >
+<title>std::promise&lt;int&gt;::_M_state (12,912,491 samples, 1.78%)</title><rect x="862.5" y="421" width="24.6" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="865.51" y="431.5" >s..</text>
+</g>
+<g >
+<title>std::enable_if&lt;is_invocable_r_v&lt;std::unique_ptr&lt;std::__future_base::_Result_base, std::__future_base::_Result_base::_Deleter&gt;, std::__future_base::_State_baseV2::_Setter&lt;int, int const&amp;&gt;&amp;&gt;, std::unique_ptr&lt;std::__future_base::_Result_base, std::__future_base::_Result_base::_Deleter&gt; &gt;::type std::__invoke_r&lt;std::unique_ptr&lt;std::__future_base::_Result_base, std::__future_base::_Result_base::_Deleter&gt;, std::__future_base::_State_baseV2::_Setter&lt;int, int const&amp;&gt;&amp;&gt; (61,600,733 samples, 8.49%)</title><rect x="585.6" y="229" width="117.1" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="588.64" y="239.5" >std::enable_if..</text>
+</g>
+<g >
+<title>HTTP::IOUring::ProcessCalls (329,073,383 samples, 45.33%)</title><rect x="271.6" y="453" width="625.6" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="274.65" y="463.5" >HTTP::IOUring::ProcessCalls</text>
+</g>
+<g >
+<title>bool std::condition_variable::wait_for&lt;long, std::ratio&lt;1l, 1000l&gt;, HTTP::IOUring::IOUring (186,124,053 samples, 25.64%)</title><rect x="916.6" y="453" width="353.8" height="15.0" fill="rgb(229,114,27)" rx="2" ry="2" />
+<text  x="919.59" y="463.5" >bool std::condition_variable::wait_for&lt;long, st..</text>
+</g>
+<g >
+<title>std::__invoke_result&lt;void  (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="501" width="5.1" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="1378.21" y="511.5" ></text>
+</g>
+<g >
+<title>std::_Tuple_impl&lt;0ul, std::__future_base::_Result_base*, std::__future_base::_Result_base::_Deleter&gt;::_M_head (5,257,918 samples, 0.72%)</title><rect x="733.1" y="197" width="10.0" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="736.09" y="207.5" ></text>
+</g>
+<g >
+<title>std::__uniq_ptr_impl&lt;std::__future_base::_Result_base, std::__future_base::_Result_base::_Deleter&gt;::_M_deleter (3,903,618 samples, 0.54%)</title><rect x="711.5" y="245" width="7.4" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="714.52" y="255.5" ></text>
+</g>
+<g >
+<title>execute_native_thread_routine (720,830,381 samples, 99.30%)</title><rect x="10.0" y="565" width="1370.3" height="15.0" fill="rgb(233,129,30)" rx="2" ry="2" />
+<text  x="13.00" y="575.5" >execute_native_thread_routine</text>
+</g>
+<g >
+<title>[liburing.so.2.13] (45,310,178 samples, 6.24%)</title><rect x="357.0" y="421" width="86.1" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="360.00" y="431.5" >[liburing...</text>
+</g>
+<g >
+<title>void io_uring_smp_store_release&lt;unsigned int&gt; (24,025,835 samples, 3.31%)</title><rect x="299.7" y="405" width="45.7" height="15.0" fill="rgb(232,124,29)" rx="2" ry="2" />
+<text  x="302.68" y="415.5" >void..</text>
+</g>
+<g >
+<title>std::_Tuple_impl&lt;0ul, std::__future_base::_Result&lt;int&gt;*, std::__future_base::_Result_base::_Deleter&gt;::_M_head (5,340,411 samples, 0.74%)</title><rect x="617.7" y="85" width="10.1" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="620.67" y="95.5" ></text>
+</g>
+<g >
+<title>std::thread::_Invoker&lt;std::tuple&lt;void  (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="533" width="5.1" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="1378.21" y="543.5" ></text>
+</g>
+<g >
+<title>std::common_type&lt;std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt;, std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt; &gt;::type std::chrono::operator+&lt;long, std::ratio&lt;1l, 1000000000l&gt;, long, std::ratio&lt;1l, 1000000000l&gt; &gt; (15,790,030 samples, 2.18%)</title><rect x="1216.6" y="421" width="30.0" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="1219.63" y="431.5" >st..</text>
+</g>
+<g >
+<title>std::common_type&lt;std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt;, std::chrono::duration&lt;long, std::ratio&lt;1l, 1l&gt; &gt; &gt;::type std::chrono::operator-&lt;std::chrono::_V2::steady_clock, std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt;, std::chrono::duration&lt;long, std::ratio&lt;1l, 1l&gt; &gt; &gt; (7,950,324 samples, 1.10%)</title><rect x="1121.1" y="389" width="15.1" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="1124.07" y="399.5" ></text>
+</g>
+<g >
+<title>void std::thread::_Invoker&lt;std::tuple&lt;void  (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="517" width="5.1" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="1378.21" y="527.5" ></text>
+</g>
+<g >
+<title>std::enable_if&lt;std::chrono::__is_duration&lt;std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt; &gt;::value, std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt; &gt;::type std::chrono::duration_cast&lt;std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt;, long, std::ratio&lt;1l, 1000000000l&gt; &gt; (4,274,060 samples, 0.59%)</title><rect x="1168.2" y="405" width="8.1" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="1171.16" y="415.5" ></text>
+</g>
+<g >
+<title>std::__uniq_ptr_impl&lt;std::__future_base::_Result&lt;int&gt;, std::__future_base::_Result_base::_Deleter&gt;::_M_ptr (9,650,378 samples, 1.33%)</title><rect x="627.8" y="133" width="18.4" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="630.82" y="143.5" ></text>
+</g>
+<g >
+<title>std::thread::_Invoker&lt;std::tuple&lt;HTTP::IOUring::IOUring (718,138,099 samples, 98.93%)</title><rect x="10.0" y="533" width="1365.2" height="15.0" fill="rgb(238,151,36)" rx="2" ry="2" />
+<text  x="13.00" y="543.5" >std::thread::_Invoker&lt;std::tuple&lt;HTTP::IOUring::IOUring</text>
+</g>
+<g >
+<title>void std::__invoke_impl&lt;void, HTTP::IOUring::IOUring (718,138,099 samples, 98.93%)</title><rect x="10.0" y="485" width="1365.2" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="13.00" y="495.5" >void std::__invoke_impl&lt;void, HTTP::IOUring::IOUring</text>
+</g>
+<g >
+<title>HTTP::MPSCQueue&lt;HTTP::IOUring::Entry&gt;::Consume (64,729,574 samples, 8.92%)</title><rect x="10.0" y="437" width="123.1" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="13.00" y="447.5" >HTTP::MPSCQueue..</text>
+</g>
+<g >
+<title>std::unique_ptr&lt;std::__future_base::_Result&lt;int&gt;, std::__future_base::_Result_base::_Deleter&gt;::operator (3,858,463 samples, 0.53%)</title><rect x="646.2" y="197" width="7.3" height="15.0" fill="rgb(228,106,25)" rx="2" ry="2" />
+<text  x="649.17" y="207.5" ></text>
+</g>
+<g >
+<title>std::once_flag::_Prepare_execution::_Prepare_execution&lt;std::call_once&lt;void  (105,388,928 samples, 14.52%)</title><rect x="571.1" y="341" width="200.4" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="574.15" y="351.5" >std::once_flag::_Prepare_e..</text>
+</g>
+<g >
+<title>std::mutex::native_handle (5,591,828 samples, 0.77%)</title><rect x="1110.4" y="373" width="10.7" height="15.0" fill="rgb(241,167,39)" rx="2" ry="2" />
+<text  x="1113.44" y="383.5" ></text>
+</g>
+<g >
+<title>std::__condvar::wait_until (49,620,231 samples, 6.84%)</title><rect x="1026.7" y="389" width="94.4" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="1029.74" y="399.5" >std::__cond..</text>
+</g>
+<g >
+<title>std::__uniq_ptr_data&lt;std::__future_base::_Result&lt;int&gt;, std::__future_base::_Result_base::_Deleter, true, true&gt;::__uniq_ptr_impl (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="69" width="5.1" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="1378.21" y="79.5" ></text>
+</g>
+<g >
+<title>std::_Function_base::~_Function_base (7,648,357 samples, 1.05%)</title><rect x="830.9" y="405" width="14.6" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="833.92" y="415.5" ></text>
+</g>
+<g >
+<title>std::promise&lt;int&gt;::promise (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="101" width="5.1" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="1378.21" y="111.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (12,353,360 samples, 1.70%)</title><rect x="1087.0" y="357" width="23.4" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1089.95" y="367.5" >[..</text>
+</g>
+<g >
+<title>std::call_once&lt;void  (5,096,126 samples, 0.70%)</title><rect x="561.5" y="341" width="9.6" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="564.46" y="351.5" ></text>
+</g>
+<g >
+<title>std::unique_ptr&lt;std::__future_base::_Result&lt;void&gt;, std::__future_base::_Result_base::_Deleter&gt; std::__invoke_impl&lt;std::unique_ptr&lt;std::__future_base::_Result&lt;void&gt;, std::__future_base::_Result_base::_Deleter&gt;, std::__future_base::_Task_setter&lt;std::unique_ptr&lt;std::__future_base::_Result&lt;void&gt;, std::__future_base::_Result_base::_Deleter&gt;, std::thread::_Invoker&lt;std::tuple&lt;HTTP::Server::Start (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="245" width="5.1" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="1378.21" y="255.5" ></text>
+</g>
+<g >
+<title>std::__uniq_ptr_impl&lt;std::__future_base::_Result&lt;int&gt;, std::__future_base::_Result_base::_Deleter&gt;::release (4,488,120 samples, 0.62%)</title><rect x="694.2" y="181" width="8.5" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="697.21" y="191.5" ></text>
+</g>
+<g >
+<title>pthread_once (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="421" width="5.1" height="15.0" fill="rgb(224,87,20)" rx="2" ry="2" />
+<text  x="1378.21" y="431.5" ></text>
+</g>
+<g >
+<title>std::tuple_element&lt;0ul, std::tuple&lt;std::__future_base::_Result&lt;int&gt;*, std::__future_base::_Result_base::_Deleter&gt; &gt;::type const&amp; std::get&lt;0ul, std::__future_base::_Result&lt;int&gt;*, std::__future_base::_Result_base::_Deleter&gt; (5,340,411 samples, 0.74%)</title><rect x="617.7" y="117" width="10.1" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="620.67" y="127.5" ></text>
+</g>
+<g >
+<title>std::_Function_base::_M_empty (7,622,731 samples, 1.05%)</title><rect x="571.1" y="245" width="14.5" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="574.15" y="255.5" ></text>
+</g>
+<g >
+<title>std::__atomic_base&lt;unsigned long&gt;::operator unsigned long (4,779,746 samples, 0.66%)</title><rect x="1277.5" y="453" width="9.1" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="1280.51" y="463.5" ></text>
+</g>
+<g >
+<title>std::_Function_handler&lt;std::unique_ptr&lt;std::__future_base::_Result_base, std::__future_base::_Result_base::_Deleter&gt;  (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="277" width="5.1" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="1378.21" y="287.5" ></text>
+</g>
+<g >
+<title>std::_Function_handler&lt;std::unique_ptr&lt;std::__future_base::_Result_base, std::__future_base::_Result_base::_Deleter&gt;  (66,218,378 samples, 9.12%)</title><rect x="585.6" y="245" width="125.9" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="588.64" y="255.5" >std::_Function_..</text>
+</g>
+<g >
+<title>cfree (20,570,633 samples, 2.83%)</title><rect x="165.6" y="437" width="39.1" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="168.60" y="447.5" >cfree</text>
+</g>
+<g >
+<title>std::__atomic_base&lt;unsigned long&gt;::operator unsigned long (9,769,598 samples, 1.35%)</title><rect x="133.1" y="421" width="18.5" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="136.05" y="431.5" ></text>
+</g>
+<g >
+<title>std::__invoke_result&lt;HTTP::IOUring::IOUring (718,138,099 samples, 98.93%)</title><rect x="10.0" y="501" width="1365.2" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="13.00" y="511.5" >std::__invoke_result&lt;HTTP::IOUring::IOUring</text>
+</g>
+<g >
+<title>io_uring_cqe_nr (6,124,552 samples, 0.84%)</title><rect x="345.4" y="421" width="11.6" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="348.36" y="431.5" ></text>
+</g>
+<g >
+<title>std::enable_if&lt;std::__and_&lt;std::__not_&lt;std::__is_tuple_like&lt;std::__future_base::_Result_base*&gt; &gt;, std::is_move_constructible&lt;std::__future_base::_Result_base*&gt;, std::is_move_assignable&lt;std::__future_base::_Result_base*&gt; &gt;::value, void&gt;::type std::swap&lt;std::__future_base::_Result_base*&gt; (9,938,859 samples, 1.37%)</title><rect x="743.1" y="229" width="18.9" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="746.08" y="239.5" ></text>
+</g>
+<g >
+<title>malloc (3,888,961 samples, 0.54%)</title><rect x="245.4" y="437" width="7.4" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="248.40" y="447.5" ></text>
+</g>
+<g >
+<title>std::__uniq_ptr_impl&lt;std::__future_base::_Result&lt;int&gt;, std::__future_base::_Result_base::_Deleter&gt;::__uniq_ptr_impl (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="53" width="5.1" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1378.21" y="63.5" ></text>
+</g>
+<g >
+<title>std::enable_if&lt;std::chrono::__is_duration&lt;std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt; &gt;::value, std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt; &gt;::type std::chrono::duration_cast&lt;std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt;, long, std::ratio&lt;1l, 1l&gt; &gt; (4,528,030 samples, 0.62%)</title><rect x="1127.6" y="341" width="8.6" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="1130.57" y="351.5" ></text>
+</g>
+<g >
+<title>clock_gettime (5,050,505 samples, 0.70%)</title><rect x="1196.7" y="421" width="9.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1199.65" y="431.5" ></text>
+</g>
+<g >
+<title>void std::thread::_Invoker&lt;std::tuple&lt;HTTP::Server::Start (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="197" width="5.1" height="15.0" fill="rgb(246,192,46)" rx="2" ry="2" />
+<text  x="1378.21" y="207.5" ></text>
+</g>
+<g >
+<title>HTTP::MPSCQueue&lt;HTTP::IOUring::Entry&gt;::Empty (14,390,838 samples, 1.98%)</title><rect x="924.2" y="405" width="27.3" height="15.0" fill="rgb(221,73,17)" rx="2" ry="2" />
+<text  x="927.17" y="415.5" >H..</text>
+</g>
+<g >
+<title>std::__future_base::_State_baseV2::_M_do_set (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="309" width="5.1" height="15.0" fill="rgb(251,213,51)" rx="2" ry="2" />
+<text  x="1378.21" y="319.5" ></text>
+</g>
+<g >
+<title>std::unique_ptr&lt;std::__future_base::_Result&lt;int&gt;, std::__future_base::_Result_base::_Deleter&gt;::get (5,340,411 samples, 0.74%)</title><rect x="617.7" y="149" width="10.1" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="620.67" y="159.5" ></text>
+</g>
+<g >
+<title>HTTP::Server::Start (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="149" width="5.1" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="1378.21" y="159.5" ></text>
+</g>
+<g >
+<title>operator new (6,644,668 samples, 0.92%)</title><rect x="595.4" y="181" width="12.7" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="598.44" y="191.5" ></text>
+</g>
+<g >
+<title>std::cv_status std::condition_variable::wait_until&lt;std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt; &gt; (3,272,610 samples, 0.45%)</title><rect x="1246.6" y="437" width="6.3" height="15.0" fill="rgb(233,131,31)" rx="2" ry="2" />
+<text  x="1249.65" y="447.5" ></text>
+</g>
+<g >
+<title>std::__uniq_ptr_impl&lt;std::__future_base::_Result_base, std::__future_base::_Result_base::_Deleter&gt;::swap (22,637,263 samples, 3.12%)</title><rect x="718.9" y="245" width="43.1" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="721.94" y="255.5" >std:..</text>
+</g>
+<g >
+<title>void std::_Function_base::_Base_manager&lt;std::__future_base::_State_baseV2::_Setter&lt;int, int const&amp;&gt; &gt;::_M_init_functor&lt;std::__future_base::_State_baseV2::_Setter&lt;int, int const&amp;&gt; &gt; (8,968,700 samples, 1.24%)</title><rect x="845.5" y="405" width="17.0" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="848.46" y="415.5" ></text>
+</g>
+<g >
+<title>std::__future_base::_State_baseV2::_M_do_set (105,388,928 samples, 14.52%)</title><rect x="571.1" y="277" width="200.4" height="15.0" fill="rgb(251,213,51)" rx="2" ry="2" />
+<text  x="574.15" y="287.5" >std::__future_base::_State..</text>
+</g>
+<g >
+<title>unsigned int io_uring_smp_load_acquire&lt;unsigned int&gt; (6,546,344 samples, 0.90%)</title><rect x="204.7" y="389" width="12.5" height="15.0" fill="rgb(231,121,29)" rx="2" ry="2" />
+<text  x="207.71" y="399.5" ></text>
+</g>
+<g >
+<title>void std::__invoke_impl&lt;void, void  (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="485" width="5.1" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="1378.21" y="495.5" ></text>
+</g>
+<g >
+<title>std::mutex::lock (6,984,023 samples, 0.96%)</title><rect x="1319.3" y="421" width="13.3" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="1322.34" y="431.5" ></text>
+</g>
+<g >
+<title>std::function&lt;std::unique_ptr&lt;std::__future_base::_Result_base, std::__future_base::_Result_base::_Deleter&gt;  (73,841,109 samples, 10.17%)</title><rect x="571.1" y="261" width="140.4" height="15.0" fill="rgb(241,170,40)" rx="2" ry="2" />
+<text  x="574.15" y="271.5" >std::function&lt;std..</text>
+</g>
+<g >
+<title>io_uring_cqe_seen (39,580,431 samples, 5.45%)</title><rect x="281.8" y="437" width="75.2" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="284.76" y="447.5" >io_uring..</text>
+</g>
+<g >
+<title>[libc.so.6] (131,918,463 samples, 18.17%)</title><rect x="520.7" y="373" width="250.8" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="523.71" y="383.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>io_uring_sqe_shift_from_flags (5,159,360 samples, 0.71%)</title><rect x="217.2" y="389" width="9.8" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="220.15" y="399.5" ></text>
+</g>
+<g >
+<title>std::once_flag::_Prepare_execution::_Prepare_execution&lt;std::call_once&lt;void  (4,453,487 samples, 0.61%)</title><rect x="800.9" y="389" width="8.5" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="803.90" y="399.5" ></text>
+</g>
+<g >
+<title>std::enable_if&lt;std::chrono::__is_duration&lt;std::chrono::duration&lt;long, std::ratio&lt;1l, 1l&gt; &gt; &gt;::value, std::chrono::time_point&lt;std::chrono::_V2::steady_clock, std::chrono::duration&lt;long, std::ratio&lt;1l, 1l&gt; &gt; &gt; &gt;::type std::chrono::time_point_cast&lt;std::chrono::duration&lt;long, std::ratio&lt;1l, 1l&gt; &gt;, std::chrono::_V2::steady_clock, std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt; &gt; (6,022,539 samples, 0.83%)</title><rect x="1156.7" y="389" width="11.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1159.71" y="399.5" ></text>
+</g>
+<g >
+<title>std::thread::_State_impl&lt;std::thread::_Invoker&lt;std::tuple&lt;void  (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="549" width="5.1" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="1378.21" y="559.5" ></text>
+</g>
+<g >
+<title> (3,858,463 samples, 0.53%)</title><rect x="646.2" y="181" width="7.3" height="15.0" fill="rgb(232,128,30)" rx="2" ry="2" />
+<text  x="649.17" y="191.5" ></text>
+</g>
+<g >
+<title>__once_proxy (4,836,671 samples, 0.67%)</title><rect x="771.5" y="373" width="9.2" height="15.0" fill="rgb(219,64,15)" rx="2" ry="2" />
+<text  x="774.49" y="383.5" ></text>
+</g>
+<g >
+<title>HTTP::IOUring::IOUring (718,138,099 samples, 98.93%)</title><rect x="10.0" y="469" width="1365.2" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="13.00" y="479.5" >HTTP::IOUring::IOUring</text>
+</g>
+<g >
+<title>std::__shared_ptr&lt;std::__future_base::_State_baseV2,  (5,143,455 samples, 0.71%)</title><rect x="877.3" y="373" width="9.8" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="880.28" y="383.5" ></text>
+</g>
+<g >
+<title>std::once_flag::_Prepare_execution::_Prepare_execution&lt;std::call_once&lt;void  (4,592,630 samples, 0.63%)</title><rect x="792.2" y="373" width="8.7" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="795.17" y="383.5" ></text>
+</g>
+<g >
+<title> (5,340,411 samples, 0.74%)</title><rect x="617.7" y="165" width="10.1" height="15.0" fill="rgb(232,128,30)" rx="2" ry="2" />
+<text  x="620.67" y="175.5" ></text>
+</g>
+<g >
+<title>io_uring_sqe_shift (5,159,360 samples, 0.71%)</title><rect x="217.2" y="405" width="9.8" height="15.0" fill="rgb(254,225,54)" rx="2" ry="2" />
+<text  x="220.15" y="415.5" ></text>
+</g>
+<g >
+<title>std::array&lt;std::optional&lt;std::promise&lt;int&gt; &gt;, 1025ul&gt;::operator[] (4,885,758 samples, 0.67%)</title><rect x="1286.6" y="453" width="9.3" height="15.0" fill="rgb(225,95,22)" rx="2" ry="2" />
+<text  x="1289.60" y="463.5" ></text>
+</g>
+<g >
+<title>void std::__invoke_impl&lt;void, HTTP::Server::Start (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="165" width="5.1" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="1378.21" y="175.5" ></text>
+</g>
+<g >
+<title>std::operator&amp; (5,783,009 samples, 0.80%)</title><rect x="963.7" y="389" width="11.0" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="966.73" y="399.5" ></text>
+</g>
+<g >
+<title>std::chrono::_V2::steady_clock::now (5,050,505 samples, 0.70%)</title><rect x="1196.7" y="437" width="9.6" height="15.0" fill="rgb(249,203,48)" rx="2" ry="2" />
+<text  x="1199.65" y="447.5" ></text>
+</g>
+<g >
+<title>std::__future_base::_Result_base::_Deleter&amp; std::__get_helper&lt;1ul, std::__future_base::_Result_base::_Deleter&gt; (6,492,157 samples, 0.89%)</title><rect x="681.9" y="149" width="12.3" height="15.0" fill="rgb(241,170,40)" rx="2" ry="2" />
+<text  x="684.87" y="159.5" ></text>
+</g>
+<g >
+<title>bool std::condition_variable::wait_until&lt;std::chrono::_V2::steady_clock, std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt;, HTTP::IOUring::IOUring (3,728,862 samples, 0.51%)</title><rect x="1270.4" y="453" width="7.1" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="1273.42" y="463.5" ></text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::mutex&gt;::unlock (22,403,904 samples, 3.09%)</title><rect x="1332.6" y="437" width="42.6" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="1335.62" y="447.5" >std:..</text>
+</g>
+<g >
+<title>std::__uniq_ptr_impl&lt;std::__future_base::_Result_base, std::__future_base::_Result_base::_Deleter&gt;::__uniq_ptr_impl&lt;std::__future_base::_Result_base::_Deleter&gt; (5,687,989 samples, 0.78%)</title><rect x="653.5" y="181" width="10.8" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="656.50" y="191.5" ></text>
+</g>
+<g >
+<title>std::__future_base::_Result&lt;int&gt;::_M_set (5,050,505 samples, 0.70%)</title><rect x="608.1" y="181" width="9.6" height="15.0" fill="rgb(235,138,33)" rx="2" ry="2" />
+<text  x="611.07" y="191.5" ></text>
+</g>
+<g >
+<title>std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt;::duration&lt;long, void&gt; (4,193,310 samples, 0.58%)</title><rect x="1252.9" y="389" width="7.9" height="15.0" fill="rgb(251,213,51)" rx="2" ry="2" />
+<text  x="1255.87" y="399.5" ></text>
+</g>
+<g >
+<title>std::__invoke_result&lt;void  (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="341" width="5.1" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="1378.21" y="351.5" ></text>
+</g>
+<g >
+<title>std::_Head_base&lt;1ul, std::__future_base::_Result_base::_Deleter, true&gt;::_M_head (6,492,157 samples, 0.89%)</title><rect x="681.9" y="133" width="12.3" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="684.87" y="143.5" ></text>
+</g>
+<g >
+<title>std::__atomic_base&lt;unsigned long&gt;::operator unsigned long (14,390,838 samples, 1.98%)</title><rect x="924.2" y="389" width="27.3" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="927.17" y="399.5" >s..</text>
+</g>
+<g >
+<title>std::_Optional_base&lt;std::promise&lt;int&gt;, false, false&gt;::_M_is_engaged (16,854,810 samples, 2.32%)</title><rect x="443.1" y="421" width="32.1" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="446.14" y="431.5" >st..</text>
+</g>
+<g >
+<title>io_uring_cq_advance (33,455,879 samples, 4.61%)</title><rect x="281.8" y="421" width="63.6" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="284.76" y="431.5" >io_uri..</text>
+</g>
+<g >
+<title>std::__atomic_base&lt;unsigned long&gt;::operator-- (3,683,701 samples, 0.51%)</title><rect x="252.8" y="437" width="7.0" height="15.0" fill="rgb(227,105,25)" rx="2" ry="2" />
+<text  x="255.79" y="447.5" ></text>
+</g>
+<g >
+<title>std::__atomic_futex_unsigned_base::_M_futex_notify_all (6,191,370 samples, 0.85%)</title><rect x="475.2" y="421" width="11.7" height="15.0" fill="rgb(222,82,19)" rx="2" ry="2" />
+<text  x="478.18" y="431.5" ></text>
+</g>
+<g >
+<title>HTTP::IOUring::IOUring (26,591,170 samples, 3.66%)</title><rect x="924.2" y="421" width="50.5" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="927.17" y="431.5" >HTTP:..</text>
+</g>
+<g >
+<title>_pthread_cleanup_pop (6,038,516 samples, 0.83%)</title><rect x="780.7" y="373" width="11.5" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="783.69" y="383.5" ></text>
+</g>
+<g >
+<title>_io_uring_get_sqe (11,705,704 samples, 1.61%)</title><rect x="204.7" y="421" width="22.3" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="207.71" y="431.5" >_..</text>
+</g>
+<g >
+<title>HTTP::MPSCQueue&lt;HTTP::IOUring::Entry&gt;::Empty (9,769,598 samples, 1.35%)</title><rect x="133.1" y="437" width="18.5" height="15.0" fill="rgb(221,73,17)" rx="2" ry="2" />
+<text  x="136.05" y="447.5" ></text>
+</g>
+<g >
+<title>std::__invoke_result&lt;void  (105,388,928 samples, 14.52%)</title><rect x="571.1" y="309" width="200.4" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="574.15" y="319.5" >std::__invoke_result&lt;void </text>
+</g>
+<g >
+<title>HTTP::IOUring::Accept (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="117" width="5.1" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="1378.21" y="127.5" ></text>
+</g>
+<g >
+<title>echo_server (725,917,987 samples, 100.00%)</title><rect x="10.0" y="613" width="1380.0" height="15.0" fill="rgb(236,143,34)" rx="2" ry="2" />
+<text  x="13.00" y="623.5" >echo_server</text>
+</g>
+<g >
+<title>std::optional&lt;std::promise&lt;int&gt; &gt;::operator bool (16,854,810 samples, 2.32%)</title><rect x="443.1" y="437" width="32.1" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="446.14" y="447.5" >st..</text>
+</g>
+<g >
+<title>std::__invoke_result&lt;HTTP::Server::Start (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="181" width="5.1" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="1378.21" y="191.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (10,686,415 samples, 1.47%)</title><rect x="1026.7" y="373" width="20.4" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1029.74" y="383.5" ></text>
+</g>
+<g >
+<title>[unknown] (5,087,606 samples, 0.70%)</title><rect x="1380.3" y="597" width="9.7" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1383.33" y="607.5" ></text>
+</g>
+<g >
+<title>std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt; std::chrono::__duration_cast_impl&lt;std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt;, std::ratio&lt;1000000000l, 1l&gt;, long, false, true&gt;::__cast&lt;long, std::ratio&lt;1l, 1l&gt; &gt; (4,528,030 samples, 0.62%)</title><rect x="1127.6" y="325" width="8.6" height="15.0" fill="rgb(229,110,26)" rx="2" ry="2" />
+<text  x="1130.57" y="335.5" ></text>
+</g>
+<g >
+<title>std::cv_status std::condition_variable::__wait_until_impl&lt;std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt; &gt; (79,777,462 samples, 10.99%)</title><rect x="1016.5" y="405" width="151.7" height="15.0" fill="rgb(239,156,37)" rx="2" ry="2" />
+<text  x="1019.50" y="415.5" >std::cv_status std:..</text>
+</g>
+<g >
+<title>std::__uniq_ptr_impl&lt;std::__future_base::_Result&lt;int&gt;, std::__future_base::_Result_base::_Deleter&gt;::_M_deleter (6,492,157 samples, 0.89%)</title><rect x="681.9" y="181" width="12.3" height="15.0" fill="rgb(239,156,37)" rx="2" ry="2" />
+<text  x="684.87" y="191.5" ></text>
+</g>
+<g >
+<title>pthread_cond_clockwait (33,341,988 samples, 4.59%)</title><rect x="1047.1" y="373" width="63.3" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="1050.05" y="383.5" >pthrea..</text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::mutex&gt;::lock (6,984,023 samples, 0.96%)</title><rect x="1319.3" y="437" width="13.3" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="1322.34" y="447.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (5,087,606 samples, 0.70%)</title><rect x="1380.3" y="581" width="9.7" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1383.33" y="591.5" ></text>
+</g>
+<g >
+<title>pthread_once (5,298,233 samples, 0.73%)</title><rect x="497.9" y="405" width="10.1" height="15.0" fill="rgb(224,87,20)" rx="2" ry="2" />
+<text  x="500.88" y="415.5" ></text>
+</g>
+<g >
+<title>io_uring_prep_rw (3,487,566 samples, 0.48%)</title><rect x="227.0" y="421" width="6.6" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="229.96" y="431.5" ></text>
+</g>
+<g >
+<title>io_uring_load_sq_head (6,546,344 samples, 0.90%)</title><rect x="204.7" y="405" width="12.5" height="15.0" fill="rgb(209,22,5)" rx="2" ry="2" />
+<text  x="207.71" y="415.5" ></text>
+</g>
+<g >
+<title>void std::atomic_store_explicit&lt;unsigned int&gt; (24,025,835 samples, 3.31%)</title><rect x="299.7" y="389" width="45.7" height="15.0" fill="rgb(235,142,34)" rx="2" ry="2" />
+<text  x="302.68" y="399.5" >void..</text>
+</g>
+<g >
+<title>void std::_Function_base::_Base_manager&lt;std::__future_base::_State_baseV2::_Setter&lt;int, int const&amp;&gt; &gt;::_M_create&lt;std::__future_base::_State_baseV2::_Setter&lt;int, int const&amp;&gt; &gt; (5,050,505 samples, 0.70%)</title><rect x="852.9" y="389" width="9.6" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="855.91" y="399.5" ></text>
+</g>
+<g >
+<title>operator new (5,050,505 samples, 0.70%)</title><rect x="608.1" y="165" width="9.6" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="611.07" y="175.5" ></text>
+</g>
+<g >
+<title>__tls_get_addr (21,433,409 samples, 2.95%)</title><rect x="520.7" y="357" width="40.8" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="523.71" y="367.5" >__t..</text>
+</g>
+<g >
+<title>std::array&lt;int*, 1024ul&gt;::operator[] (6,234,315 samples, 0.86%)</title><rect x="259.8" y="437" width="11.8" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="262.79" y="447.5" ></text>
+</g>
+<g >
+<title>clock_gettime (5,387,159 samples, 0.74%)</title><rect x="1016.5" y="389" width="10.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1019.50" y="399.5" ></text>
+</g>
+<g >
+<title>[liburing.so.2.13] (10,187,589 samples, 1.40%)</title><rect x="897.2" y="453" width="19.4" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="900.23" y="463.5" ></text>
+</g>
+<g >
+<title>std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt;::duration&lt;long, std::ratio&lt;1l, 1l&gt;, void&gt; (4,528,030 samples, 0.62%)</title><rect x="1127.6" y="357" width="8.6" height="15.0" fill="rgb(207,12,3)" rx="2" ry="2" />
+<text  x="1130.57" y="367.5" ></text>
+</g>
+<g >
+<title>std::chrono::time_point&lt;std::chrono::_V2::steady_clock, std::common_type&lt;std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt;, std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt; &gt;::type&gt; std::chrono::operator+&lt;std::chrono::_V2::steady_clock, std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt;, long, std::ratio&lt;1l, 1000000000l&gt; &gt; (21,248,860 samples, 2.93%)</title><rect x="1206.3" y="437" width="40.3" height="15.0" fill="rgb(216,50,12)" rx="2" ry="2" />
+<text  x="1209.25" y="447.5" >std..</text>
+</g>
+<g >
+<title>[liburing.so.2.13] (7,351,966 samples, 1.01%)</title><rect x="151.6" y="437" width="14.0" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="154.63" y="447.5" ></text>
+</g>
+<g >
+<title>std::unique_ptr&lt;std::__future_base::_Result&lt;int&gt;, std::__future_base::_Result_base::_Deleter&gt; std::__invoke_impl&lt;std::unique_ptr&lt;std::__future_base::_Result&lt;int&gt;, std::__future_base::_Result_base::_Deleter&gt;, std::__future_base::_State_baseV2::_Setter&lt;int, int const&amp;&gt;&amp;&gt; (35,699,036 samples, 4.92%)</title><rect x="585.6" y="213" width="67.9" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="588.64" y="223.5" >std::un..</text>
+</g>
+<g >
+<title>clock_gettime (10,714,884 samples, 1.48%)</title><rect x="1176.3" y="437" width="20.4" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1179.28" y="447.5" ></text>
+</g>
+<g >
+<title>std::call_once&lt;void  (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="357" width="5.1" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="1378.21" y="367.5" ></text>
+</g>
+<g >
+<title>std::cv_status std::condition_variable::wait_until&lt;std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt; &gt; (106,024,182 samples, 14.61%)</title><rect x="974.7" y="421" width="201.6" height="15.0" fill="rgb(233,131,31)" rx="2" ry="2" />
+<text  x="977.73" y="431.5" >std::cv_status std::condit..</text>
+</g>
+<g >
+<title>std::unique_ptr&lt;std::__future_base::_Result&lt;int&gt;, std::__future_base::_Result_base::_Deleter&gt;::get_deleter (15,725,588 samples, 2.17%)</title><rect x="664.3" y="197" width="29.9" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="667.31" y="207.5" >st..</text>
+</g>
+<g >
+<title>std::_Function_base::_Base_manager&lt;std::__future_base::_State_baseV2::_Setter&lt;int, int const&amp;&gt; &gt;::_M_manager (4,131,101 samples, 0.57%)</title><rect x="837.6" y="373" width="7.9" height="15.0" fill="rgb(218,64,15)" rx="2" ry="2" />
+<text  x="840.61" y="383.5" ></text>
+</g>
+<g >
+<title>std::chrono::time_point&lt;std::chrono::_V2::steady_clock, std::chrono::duration&lt;long, std::ratio&lt;1l, 1000000000l&gt; &gt; &gt;::time_since_epoch (6,022,539 samples, 0.83%)</title><rect x="1156.7" y="373" width="11.5" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1159.71" y="383.5" ></text>
+</g>
+<g >
+<title>std::operator&amp; (6,546,344 samples, 0.90%)</title><rect x="204.7" y="357" width="12.5" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="207.71" y="367.5" ></text>
+</g>
+<g >
+<title>std::__future_base::_State_baseV2::_M_set_result (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="453" width="5.1" height="15.0" fill="rgb(229,114,27)" rx="2" ry="2" />
+<text  x="1378.21" y="463.5" ></text>
+</g>
+<g >
+<title>std::once_flag::_Prepare_execution::_Prepare_execution&lt;std::call_once&lt;void  (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="373" width="5.1" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="1378.21" y="383.5" ></text>
+</g>
+<g >
+<title>std::__uniq_ptr_data&lt;std::__future_base::_Result&lt;int&gt;, std::__future_base::_Result_base::_Deleter, true, true&gt;::__uniq_ptr_data (9,650,378 samples, 1.33%)</title><rect x="627.8" y="165" width="18.4" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="630.82" y="175.5" ></text>
+</g>
+<g >
+<title>all (725,917,987 samples, 100%)</title><rect x="10.0" y="629" width="1380.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="639.5" ></text>
+</g>
+<g >
+<title>std::__future_base::_Result&lt;int&gt;* const&amp; std::__get_helper&lt;0ul, std::__future_base::_Result&lt;int&gt;*, std::__future_base::_Result_base::_Deleter&gt; (5,340,411 samples, 0.74%)</title><rect x="617.7" y="101" width="10.1" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="620.67" y="111.5" ></text>
+</g>
+<g >
+<title>std::chrono::duration&lt;long, std::ratio&lt;1l, 1l&gt; &gt;::count (4,528,030 samples, 0.62%)</title><rect x="1127.6" y="309" width="8.6" height="15.0" fill="rgb(213,37,9)" rx="2" ry="2" />
+<text  x="1130.57" y="319.5" ></text>
+</g>
+<g >
+<title>std::call_once&lt;void  (105,388,928 samples, 14.52%)</title><rect x="571.1" y="325" width="200.4" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="574.15" y="335.5" >std::call_once&lt;void </text>
+</g>
+<g >
+<title>std::unique_lock&lt;std::mutex&gt;::unique_lock (14,679,718 samples, 2.02%)</title><rect x="1304.7" y="453" width="27.9" height="15.0" fill="rgb(229,114,27)" rx="2" ry="2" />
+<text  x="1307.71" y="463.5" >s..</text>
+</g>
+<g >
+<title>std::thread::_Invoker&lt;std::tuple&lt;HTTP::Server::Start (2,692,282 samples, 0.37%)</title><rect x="1375.2" y="213" width="5.1" height="15.0" fill="rgb(207,10,2)" rx="2" ry="2" />
+<text  x="1378.21" y="223.5" ></text>
+</g>
+</g>
+</svg>

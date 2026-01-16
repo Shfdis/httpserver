@@ -1,24 +1,24 @@
 #pragma once
-#include "iasio.h"
+#include "io_uring.h"
 #include "read_iterator.h"
 #include "request_data.h"
 #include "trie.h"
-#include <deque>
-#include <future>
+#include <thread>
+#include <vector>
 namespace HTTP {
 class Server {
 private:
-  std::deque<std::future<void>> requestFutures_;
-  IAsioPtr ring_;
   int socketFD_{-1};
   int port_{0};
+  int numThreads_{1};
   Trie trie_;
-  void Accept();
-  RespondType GetHandler(RequestData &data, ReadIterator &iter);
-  void WriteResponse(int connectionFD, const ResponseData &data);
-  void Process(int connectionFD);
-  std::future<void> main_;
+  std::vector<std::thread> workerThreads_;
   std::atomic_bool stopFlag_{false};
+  
+  void WorkerLoop();
+  RespondType GetHandler(RequestData &data, ReadIterator &iter);
+  void WriteResponse(IOUring &ring, int connectionFD, const ResponseData &data);
+  void Process(IOUring &ring, int connectionFD);
   friend class ServerBuilder;
 
 public:
@@ -30,10 +30,9 @@ public:
 class ServerBuilder {
 private:
   Server server_;
-  int port_;
 
 public:
-  void SetAsio(IAsioPtr asio);
+  void SetThreads(int numThreads);
   void SetPort(int port);
   void AddRequest(Method method, std::string_view path, RespondType respond);
   Server Build();

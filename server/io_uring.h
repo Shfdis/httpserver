@@ -1,16 +1,17 @@
 #pragma once
-#include "iasio.h"
 #include "mpsc_queue.h"
 #include <array>
 #include <atomic>
+#include <condition_variable>
 #include <future>
 #include <liburing.h>
 #include <liburing/io_uring.h>
+#include <mutex>
 #include <optional>
 #include <thread>
 #define QUEUE_DEPTH 1024
 namespace HTTP {
-class IOUring : IAsio {
+class IOUring {
 private:
   struct Entry {
     enum { ACCEPT, READ, WRITE } type;
@@ -21,12 +22,16 @@ private:
   };
   MPSCQueue<Entry> queue_;
   io_uring ring_;
+  std::array<int *, 1024> fds_;
   std::array<std::optional<std::promise<int>>, 1025> fdToPromise_;
   std::atomic<bool> stopToken_ = false;
   std::atomic_uint64_t inProcess_ = 0;
+  std::mutex wakeMutex_;
+  std::condition_variable wakeCv_;
   std::thread workerThread_;
   void ProcessCalls();
   void AddEntries();
+  void NotifyWorker();
   void SubmitEntry(int *value);
 
 public:

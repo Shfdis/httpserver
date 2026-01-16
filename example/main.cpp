@@ -1,12 +1,11 @@
 #include "http_server.h"
-#include "iasio.h"
-#include "io_uring.h"
 #include <future>
 #include <string_view>
 
 int main() {
   HTTP::ServerBuilder builder;
   builder.SetPort(8080);
+  builder.SetThreads(4);
   builder.AddRequest(HTTP::POST, "/echo", [](const HTTP::RequestData &request) {
     HTTP::ResponseData response;
     response.status = 200;
@@ -23,8 +22,6 @@ int main() {
     }
     return response;
   });
-  builder.SetAsio(
-      std::unique_ptr<HTTP::IAsio>((HTTP::IAsio *)new HTTP::IOUring()));
   auto server = builder.Build();
   server.Start();
   std::promise<void> keep_alive;
