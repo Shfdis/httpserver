@@ -2,6 +2,8 @@
 #include "http_error.h"
 #include "io_uring.h"
 #include "request_data.h"
+#include <chrono>
+#include <functional>
 #include <string_view>
 namespace HTTP {
 ReadIterator::ReadIterator(IOUring &ring, int fileDescriptor) : ring_(ring) {
@@ -12,7 +14,8 @@ ReadIterator::ReadIterator(IOUring &ring, int fileDescriptor) : ring_(ring) {
   eof_ = (length_ == 0);
 }
 char ReadIterator::operator*() {
-  if (eof_) return '\0';
+  if (eof_)
+    return '\0';
   if (position_ >= length_) {
     auto result = ring_.Read(fileDescriptor_, buffer_);
     length_ = result.get();
@@ -28,15 +31,36 @@ ReadIterator &ReadIterator::operator++() {
   position_++;
   return *this;
 }
+void ReadIterator::Current(std::function<void(char)> callback) {
+  if (eof_) {
+    callback('\0');
+    return;
+  }
+  if (position_ >= length_) {
+    auto result = ring_.Read(fileDescriptor_, buffer_);
+    length_ = result.get();
+    position_ = 0;
+    if (length_ == 0) {
+      eof_ = true;
+      callback('\0');
+    }
+  }
+  callback(buffer_[position_]);
+}
 void ReadIterator::operator++(int) { position_++; }
 Method ReadIterator::ParseMethod() {
   std::string methodString;
   int count{0};
-  while (count < 5 && *this && **this != ' ') {
-    methodString += **this;
+  std::function<void(char)> processOne = [&](char currentChar) {
+    if (count == 5 || !*this || currentChar == ' ') {
+      return;
+    }
+    methodString += currentChar;
     count++;
     ++*this;
-  }
+    Current(processOne);
+  };
+  Current(processOne);
   if (methodString == "PUT") {
     return PUT;
   }
@@ -55,19 +79,24 @@ Method ReadIterator::ParseMethod() {
   throw HTTPError(400, "Invalid request");
 }
 void ReadIterator::ParseVariables(RequestData &request) {
-  if (**this != '?' && **this != ' ') {
-    throw HTTPError(400, "Invalid request");
-  }
+  Current([&](char currentChar) {
+    if (currentChar != '?' && currentChar != ' ') {
+      throw HTTPError(400, "Invalid request");
+    }
+  });
+
   enum { Name, Value } current = Name;
   std::string name;
   std::string *value;
-  if (**this != '?') {
+  if (**this != '?') { // will call std::terminate on read overflow
     return;
   }
   ++*this;
-  while (*this && **this != ' ') {
+  std::function<void(char)> processOne = [&](char currentChar) {
+    if (!*this || currentChar == ' ')
+      return;
     if (current == Name) {
-      if (**this == '=') {
+      if (currentChar == '=') {
         if (name == "") {
           throw HTTPError(400, "Empty parameter name");
         }
@@ -75,19 +104,21 @@ void ReadIterator::ParseVariables(RequestData &request) {
         request.params[name] = "";
         value = &request.params[name];
       } else {
-        name.push_back(**this);
+        name.push_back(currentChar);
       }
     } else {
-      if (**this == '&') {
+      if (currentChar == '&') {
         name = "";
         value = nullptr;
         current = Name;
       } else {
-        value->push_back(**this);
+        value->push_back(currentChar);
       }
     }
     ++*this;
-  }
+    Current(processOne);
+  };
+  Current(processOne);
   if (!*this) {
     throw HTTPError(400, "Empty parameter name");
   }
