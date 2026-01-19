@@ -1,7 +1,6 @@
 #pragma once
 #include "request_data.h"
 #include <array>
-#include <functional>
 namespace HTTP {
 class IOUring;
 class ReadIterator {
@@ -22,7 +21,6 @@ public:
   Method ParseMethod();
   void ParseBody(RequestData &data);
   char operator*();
-  void Current(std::function<void(char)> callback);
   explicit operator bool() const { return !eof_; }
   using value_type = char;
   using difference_type = std::ptrdiff_t;
