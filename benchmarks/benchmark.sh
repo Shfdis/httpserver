@@ -6,14 +6,12 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Check if wrk is installed
 if ! command -v wrk &> /dev/null; then
     echo -e "${YELLOW}wrk is not installed. Installing dependencies...${NC}"
     echo "Please install wrk:"
@@ -23,10 +21,10 @@ if ! command -v wrk &> /dev/null; then
     exit 1
 fi
 
-# Configuration
-DURATION=30s
-THREADS=4
-CONNECTIONS=100
+DURATION="${DURATION:-30s}"
+THREADS="${THREADS:-4}"
+CONNECTIONS="${CONNECTIONS:-100}"
+WRK_TIMEOUT="${WRK_TIMEOUT:-2s}"
 CPP_PORT=8080
 RUST_PORT=8081
 RESULTS_DIR="results"
@@ -36,12 +34,33 @@ mkdir -p "$RESULTS_DIR"
 
 echo -e "${BLUE}=== HTTP Server Benchmark Suite ===${NC}\n"
 
-# Function to check if server is running
+CPP_PID=""
+RUST_PID=""
+
+cleanup() {
+    echo -e "\n${YELLOW}Stopping servers...${NC}"
+    if [ -n "${CPP_PID}" ]; then
+        kill "$CPP_PID" 2>/dev/null || true
+        wait "$CPP_PID" 2>/dev/null || true
+    fi
+    if [ -n "${RUST_PID}" ]; then
+        kill "$RUST_PID" 2>/dev/null || true
+        wait "$RUST_PID" 2>/dev/null || true
+    fi
+}
+
+trap cleanup EXIT
+
+echo -e "${YELLOW}Cleaning up any previous servers...${NC}"
+pkill -f 'tokio-echo-server' 2>/dev/null || true
+pkill -f 'echo_server' 2>/dev/null || true
+sleep 1
+
 check_server() {
     local port=$1
     local name=$2
     for i in {1..30}; do
-        if curl -s "http://127.0.0.1:$port/echo?msg=test" > /dev/null 2>&1; then
+        if curl -s --connect-timeout 1 --max-time 2 "http://127.0.0.1:$port/echo?msg=test" > /dev/null 2>&1; then
             echo -e "${GREEN}✓${NC} $name server is ready"
             return 0
         fi
@@ -51,7 +70,6 @@ check_server() {
     return 1
 }
 
-# Function to run benchmark
 run_benchmark() {
     local name=$1
     local port=$2
@@ -64,18 +82,18 @@ run_benchmark() {
     echo "  Duration: $DURATION"
     echo "  Threads: $THREADS"
     echo "  Connections: $CONNECTIONS"
+    echo "  wrk timeout: $WRK_TIMEOUT"
     
     if [ "$method" = "GET" ]; then
-        wrk -t$THREADS -c$CONNECTIONS -d$DURATION --latency "http://127.0.0.1:$port$endpoint?msg=benchmark" > "$output_file" 2>&1
+        wrk -t$THREADS -c$CONNECTIONS -d$DURATION --timeout $WRK_TIMEOUT --latency "http://127.0.0.1:$port$endpoint?msg=benchmark" > "$output_file" 2>&1
     else
-        # Create POST script for wrk
         POST_SCRIPT=$(mktemp)
         cat > "$POST_SCRIPT" <<'WRKSCRIPT'
 wrk.method = "POST"
 wrk.body   = "benchmark data"
 wrk.headers["Content-Type"] = "text/plain"
 WRKSCRIPT
-        wrk -t$THREADS -c$CONNECTIONS -d$DURATION --latency -s "$POST_SCRIPT" "http://127.0.0.1:$port$endpoint" > "$output_file" 2>&1
+        wrk -t$THREADS -c$CONNECTIONS -d$DURATION --timeout $WRK_TIMEOUT --latency -s "$POST_SCRIPT" "http://127.0.0.1:$port$endpoint" > "$output_file" 2>&1
         rm -f "$POST_SCRIPT"
     fi
     
@@ -83,19 +101,17 @@ WRKSCRIPT
     cat "$output_file"
 }
 
-# Test scenarios
 test_scenarios=(
-    "GET:/echo?msg=test:GET"
+    "GET:/echo:GET"
     "POST:/echo:POST"
 )
 
 echo -e "${YELLOW}Starting C++ server...${NC}"
-# Try to find the echo_server binary
 CPP_SERVER=""
-if [ -f "../example/echo_server" ]; then
-    CPP_SERVER="../example/echo_server"
-elif [ -f "../example/build/echo_server" ]; then
+if [ -f "../example/build/echo_server" ]; then
     CPP_SERVER="../example/build/echo_server"
+elif [ -f "../example/echo_server" ]; then
+    CPP_SERVER="../example/echo_server"
 else
     echo -e "${RED}Error: Could not find echo_server binary${NC}"
     echo "Please build it first: cd ../example && cmake -B build && cmake --build build"
@@ -107,6 +123,11 @@ cd "$(dirname "$CPP_SERVER")"
 CPP_PID=$!
 cd "$SCRIPT_DIR"
 
+if ! kill -0 "$CPP_PID" 2>/dev/null; then
+    echo -e "${RED}✗${NC} C++ server failed to start"
+    exit 1
+fi
+
 sleep 2
 if ! check_server $CPP_PORT "C++"; then
     kill $CPP_PID 2>/dev/null || true
@@ -115,13 +136,16 @@ fi
 
 echo -e "\n${YELLOW}Starting Rust Tokio server...${NC}"
 cd "$(dirname "$0")/rust_server"
-if [ ! -d "target" ]; then
-    echo "Building Rust server..."
-    cargo build --release
-fi
-cargo run --release &
+echo "Building Rust server..."
+cargo build --release
+./target/release/tokio-echo-server &
 RUST_PID=$!
 cd - > /dev/null
+
+if ! kill -0 "$RUST_PID" 2>/dev/null; then
+    echo -e "${RED}✗${NC} Rust Tokio server failed to start"
+    exit 1
+fi
 
 sleep 2
 if ! check_server $RUST_PORT "Rust Tokio"; then
@@ -129,7 +153,6 @@ if ! check_server $RUST_PORT "Rust Tokio"; then
     exit 1
 fi
 
-# Run benchmarks
 for scenario in "${test_scenarios[@]}"; do
     IFS=':' read -r name endpoint method <<< "$scenario"
     
@@ -143,7 +166,6 @@ for scenario in "${test_scenarios[@]}"; do
     sleep 2
 done
 
-# Generate comparison report
 echo -e "\n${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BLUE}Generating comparison report...${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -183,10 +205,5 @@ done
 
 cat "$COMPARE_FILE"
 echo -e "\n${GREEN}Full comparison saved to: $COMPARE_FILE${NC}"
-
-# Cleanup
-echo -e "\n${YELLOW}Stopping servers...${NC}"
-kill $CPP_PID $RUST_PID 2>/dev/null || true
-wait $CPP_PID $RUST_PID 2>/dev/null || true
 
 echo -e "${GREEN}Benchmark completed!${NC}"
