@@ -50,4 +50,35 @@ int main() {
 ```
 ## Benchmarks
 
-The `benchmarks/` directory contains comparison tests against a Rust Tokio server. Benchmark scripts were written with assistance from Cursor.
+The `benchmarks/` directory contains comparison tests against a Rust Tokio server.
+
+### Specs
+
+- **Policy**: one `io_uring` per worker thread
+- **OS**: Arch Linux, Linux 6.18.3-arch1-1
+- **CPU**: Intel(R) Core(TM) Ultra 7 155H (22 CPUs)
+- **RAM**: 30 GiB
+- **Compiler**: GCC 15.2.1
+- **liburing**: 2.13
+
+### Results (C++ coroutine server vs Rust Tokio)
+
+Run:
+
+```bash
+cd example
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_ASAN=OFF
+cmake --build build -j
+
+cd ../benchmarks
+DURATION=10s THREADS=4 CONNECTIONS=100 WRK_TIMEOUT=2s ./benchmark.sh
+```
+
+Output (2026-01-22, non-ASAN Release build):
+
+- **GET /echo**
+  - **C++**: 393013 req/s
+  - **Tokio**: 91060 req/s
+- **POST /echo**
+  - **C++**: 355954 req/s
+  - **Tokio**: 93576 req/s
