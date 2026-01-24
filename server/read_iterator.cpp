@@ -1,60 +1,103 @@
 #include "read_iterator.h"
 #include "http_error.h"
-#include "io_uring.h"
-#include "request_data.h"
-#include <string_view>
+#include <algorithm>
+#include <string>
 namespace HTTP {
-ReadIterator::ReadIterator(IOUring &ring, int fileDescriptor) : ring_(ring) {
-  auto result = ring_.Read(fileDescriptor, buffer_);
-  length_ = result.get();
-  position_ = 0;
-  fileDescriptor_ = fileDescriptor;
-  eof_ = (length_ == 0);
+ReadIterator::ReadIterator(IOUring &ring, int fd_) : ring_(ring), fd_(fd_), length_(0), position_(0) {
 }
-char ReadIterator::operator*() {
-  if (eof_) return '\0';
+
+Coroutine ReadIterator::Ensure() {
   if (position_ >= length_) {
-    auto result = ring_.Read(fileDescriptor_, buffer_);
-    length_ = result.get();
+    length_ = co_await ring_.ReadAsync(fd_, buffer_);
     position_ = 0;
-    if (length_ == 0) {
-      eof_ = true;
-      return '\0';
-    }
   }
-  return buffer_[position_];
+  co_return;
 }
-ReadIterator &ReadIterator::operator++() {
-  position_++;
-  return *this;
+
+size_t ReadIterator::Available() const {
+  if (position_ >= length_) return 0;
+  return length_ - position_;
 }
-void ReadIterator::operator++(int) { position_++; }
-Method ReadIterator::ParseMethod() {
+
+const char *ReadIterator::CurrentPtr() const {
+  if (position_ >= length_) return nullptr;
+  return buffer_.data() + position_;
+}
+
+void ReadIterator::Advance(size_t n) {
+  position_ += n;
+}
+
+Coroutine ReadIterator::operator++() {
+  ++position_;
+  co_return;
+}
+
+ReadIterator::operator bool() {
+  return position_ < length_ && **this != '\0';
+}
+
+char ReadIterator::operator*() {
+  if (position_ >= length_) {
+    return '\0';
+  }
+  return buffer_.at(position_);
+}
+
+Coroutine ReadIterator::ParseMethod(RequestData &data) {
+  co_await Ensure();
+  if (length_ == 0) {
+    throw HTTPError(400, "Invalid request");
+  }
+  while (true) {
+    co_await Ensure();
+    if (!*this) {
+      throw HTTPError(400, "Invalid request");
+    }
+    if (**this != '\r' && **this != '\n') {
+      break;
+    }
+    co_await ++*this;
+  }
   std::string methodString;
   int count{0};
-  while (count < 5 && *this && **this != ' ') {
+  while (count < 5) {
+    co_await Ensure();
+    if (!*this) {
+      throw HTTPError(400, "Invalid request");
+    }
+    if (**this == ' ') {
+      break;
+    }
     methodString += **this;
     count++;
-    ++*this;
+    co_await ++*this;
   }
   if (methodString == "PUT") {
-    return PUT;
+    data.method = PUT;
+    co_return;
   }
   if (methodString == "POST") {
-    return POST;
+    data.method = POST;
+    co_return;
   }
   if (methodString == "DELETE") {
-    return DELETE;
+    data.method = DELETE;
+    co_return;
   }
   if (methodString == "PATCH") {
-    return PATCH;
+    data.method = PATCH;
+    co_return;
   }
   if (methodString == "GET") {
-    return GET;
+    data.method = GET;
+    co_return;
   }
   throw HTTPError(400, "Invalid request");
 }
-void ReadIterator::ParseVariables(RequestData &request) {
+
+Coroutine ReadIterator::ParseVariables(RequestData &data) {
+  co_await Ensure();
   if (**this != '?' && **this != ' ') {
     throw HTTPError(400, "Invalid request");
   }
@@ -62,18 +105,25 @@ void ReadIterator::ParseVariables(RequestData &request) {
   std::string name;
   std::string *value;
   if (**this != '?') {
-    return;
+    co_return;
   }
-  ++*this;
-  while (*this && **this != ' ') {
+  co_await ++*this;
+  while (true) {
+    co_await Ensure();
+    if (!*this) {
+      throw HTTPError(400, "Empty parameter name");
+    }
+    if (**this == ' ') {
+      break;
+    }
     if (current == Name) {
       if (**this == '=') {
         if (name == "") {
           throw HTTPError(400, "Empty parameter name");
         }
         current = Value;
-        request.params[name] = "";
-        value = &request.params[name];
+        data.params[name] = "";
+        value = &data.params[name];
       } else {
         name.push_back(**this);
       }
@@ -86,20 +136,23 @@ void ReadIterator::ParseVariables(RequestData &request) {
         value->push_back(**this);
       }
     }
-    ++*this;
+    co_await ++*this;
   }
-  if (!*this) {
-    throw HTTPError(400, "Empty parameter name");
-  }
+  co_return;
 }
-void ReadIterator::ParseHeaders(RequestData &request) {
+
+Coroutine ReadIterator::ParseHeaders(RequestData &data) {
   enum { Name, Value } current = Name;
   std::string name;
   std::string *value;
   char last = 'a';
-  while (*this) {
+  while (true) {
+    co_await Ensure();
+    if (!*this) {
+      throw HTTPError(400, "Invalid message");
+    }
     if (**this == '\r') {
-      ++*this;
+      co_await ++*this;
       continue;
     }
     if (last == **this && last == '\n') {
@@ -111,8 +164,8 @@ void ReadIterator::ParseHeaders(RequestData &request) {
           throw HTTPError(400, "Empty header name");
         }
         current = Value;
-        request.headers[name] = "";
-        value = &request.headers[name];
+        data.headers[name] = "";
+        value = &data.headers[name];
       } else {
         name.push_back(**this);
       }
@@ -126,42 +179,66 @@ void ReadIterator::ParseHeaders(RequestData &request) {
       }
     }
     last = **this;
-    ++*this;
+    co_await ++*this;
   }
-  if (!*this) {
-    throw HTTPError(400, "Invalid message");
-  }
+  co_return;
 }
-void ReadIterator::ParseBody(RequestData &request) {
-  auto it = request.headers.find("Content-Length");
-  if (it != request.headers.end()) {
+
+Coroutine ReadIterator::ParseBody(RequestData &data) {
+  auto it = data.headers.find("Content-Length");
+  if (it != data.headers.end()) {
     try {
       size_t length = std::stoul(it->second);
-      for (size_t i = 0; i < length; ++i) {
-        if (!*this)
-          break;
-        request.body.push_back(**this);
-        ++*this;
+      data.body.clear();
+      data.body.reserve(length);
+      co_await Ensure();
+      if (*this && (**this == '\n' || **this == '\r')) {
+        co_await ++*this;
+        co_await Ensure();
+        if (*this && (**this == '\n' || **this == '\r')) {
+          co_await ++*this;
+        }
+      }
+      size_t remaining = length;
+      while (remaining > 0) {
+        co_await Ensure();
+        if (!*this) break;
+        size_t avail = Available();
+        if (avail == 0) continue;
+        size_t take = std::min(avail, remaining);
+        data.body.append(CurrentPtr(), take);
+        Advance(take);
+        remaining -= take;
       }
     } catch (...) {
     }
-    return;
+    co_return;
   }
 
-  auto it2 = request.headers.find("Transfer-Encoding");
-  if (it2 != request.headers.end() && it2->second == "chunked") {
-    // Chunked encoding not implemented in this simple server
-    return;
+  auto it2 = data.headers.find("Transfer-Encoding");
+  if (it2 != data.headers.end() && it2->second == "chunked") {
+    co_return;
   }
 
-  // If no Content-Length and not chunked, assume no body for GET/DELETE/etc.
-  if (request.method == GET || request.method == DELETE) {
-    return;
+  if (data.method == GET || data.method == DELETE) {
+    co_return;
   }
 
-  while (*this) {
-    request.body.push_back(**this);
-    ++*this;
+  co_await Ensure();
+  if (*this && (**this == '\n' || **this == '\r')) {
+    co_await ++*this;
+    co_await Ensure();
+    if (*this && (**this == '\n' || **this == '\r')) {
+      co_await ++*this;
+    }
   }
+
+  while (true) {
+    co_await Ensure();
+    if (!*this) break;
+    data.body.push_back(**this);
+    co_await ++*this;
+  }
+  co_return;
 }
-} // namespace HTTP
+}

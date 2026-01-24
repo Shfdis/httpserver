@@ -1,28 +1,27 @@
 #pragma once
+#include "coroutine.h"
+#include "io_uring.h"
 #include "request_data.h"
-#include <array>
 namespace HTTP {
-class IOUring;
 class ReadIterator {
-private:
   IOUring &ring_;
   std::array<char, 256> buffer_;
-  size_t position_;
-  size_t length_;
-  int fileDescriptor_;
-  bool eof_ = false;
+  size_t length_{0};
+  size_t position_{0};
+  int fd_;
 
 public:
-  ReadIterator(IOUring &ring, int fileDescriptor);
-  ReadIterator &operator++();
-  void operator++(int);
-  void ParseVariables(RequestData &data);
-  void ParseHeaders(RequestData &data);
-  Method ParseMethod();
-  void ParseBody(RequestData &data);
+  ReadIterator(IOUring &ring, int fd_);
+  Coroutine Ensure();
+  size_t Available() const;
+  const char *CurrentPtr() const;
+  void Advance(size_t n);
+  Coroutine operator++();
   char operator*();
-  explicit operator bool() const { return !eof_; }
-  using value_type = char;
-  using difference_type = std::ptrdiff_t;
+  operator bool();
+  Coroutine ParseVariables(RequestData &data);
+  Coroutine ParseHeaders(RequestData &data);
+  Coroutine ParseMethod(RequestData &data);
+  Coroutine ParseBody(RequestData &data);
 };
-} // namespace HTTP
+}; // namespace HTTP
