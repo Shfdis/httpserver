@@ -29,4 +29,4 @@ Trie &Trie::operator=(Trie &&rhs) {
   root_ = std::move(rhs.root_);
   return *this;
 }
-}; // namespace HTTP
+} // namespace HTTP

@@ -69,16 +69,19 @@ async fn handle_request(
     }
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 22)]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = "127.0.0.1:8081".parse()?;
     let listener = TcpListener::bind(&addr).await?;
     println!("Tokio server listening on http://{}", addr);
     
     loop {
+        // Accept connections asynchronously - this yields to the runtime
+        // when no connection is available, allowing other tasks to run
         let (stream, _) = listener.accept().await?;
         let io = TokioIo::new(stream);
         
+        // Spawn each connection handler immediately without waiting
         tokio::task::spawn(async move {
             if let Err(err) = http1::Builder::new()
                 .serve_connection(io, service_fn(handle_request))
