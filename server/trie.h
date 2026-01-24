@@ -11,6 +11,7 @@ class Trie {
     std::unordered_map<char, std::unique_ptr<Node>> children;
     std::optional<RespondType> handlers[5];
     Node() = default;
+    bool any = false;
     Node &Move(char c);
     const Node &Move(char c) const;
   };
