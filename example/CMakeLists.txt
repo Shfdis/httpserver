@@ -11,5 +11,7 @@ execute_process(COMMAND ${CMAKE_COMMAND} --build build_dep --target install)
 set(CMAKE_PREFIX_PATH ${CMAKE_CURRENT_BINARY_DIR}/install_dep)
 find_package(coro_http_server REQUIRED)
 
+option(ENABLE_ASAN "Enable AddressSanitizer" OFF)
+add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../server coro_server_build)
 add_executable(echo_server main.cpp)
 target_link_libraries(echo_server PRIVATE coro_http_server::coro_http_server)
