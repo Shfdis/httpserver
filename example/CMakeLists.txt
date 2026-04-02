@@ -3,7 +3,6 @@ project(example_echo_server CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Build and install dependency locally
 get_filename_component(SERVER_DIR "${CMAKE_CURRENT_LIST_DIR}/../server" ABSOLUTE)
 execute_process(COMMAND ${CMAKE_COMMAND} -S "${SERVER_DIR}" -B build_dep -DCMAKE_INSTALL_PREFIX=install_dep -DCMAKE_CXX_STANDARD=20)
 execute_process(COMMAND ${CMAKE_COMMAND} --build build_dep --target install)

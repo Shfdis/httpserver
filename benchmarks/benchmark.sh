@@ -37,16 +37,26 @@ echo -e "${BLUE}=== HTTP Server Benchmark Suite ===${NC}\n"
 CPP_PID=""
 RUST_PID=""
 
-cleanup() {
-    echo -e "\n${YELLOW}Stopping servers...${NC}"
+stop_cpp_server() {
     if [ -n "${CPP_PID}" ]; then
         kill "$CPP_PID" 2>/dev/null || true
         wait "$CPP_PID" 2>/dev/null || true
+        CPP_PID=""
     fi
+}
+
+stop_rust_server() {
     if [ -n "${RUST_PID}" ]; then
         kill "$RUST_PID" 2>/dev/null || true
         wait "$RUST_PID" 2>/dev/null || true
+        RUST_PID=""
     fi
+}
+
+cleanup() {
+    echo -e "\n${YELLOW}Stopping servers...${NC}"
+    stop_cpp_server
+    stop_rust_server
 }
 
 trap cleanup EXIT
@@ -72,10 +82,11 @@ check_server() {
 
 run_benchmark() {
     local name=$1
-    local port=$2
-    local endpoint=$3
-    local method=$4
-    local output_file="$RESULTS_DIR/${name}_${TIMESTAMP}.txt"
+    local scenario_name=$2
+    local port=$3
+    local endpoint=$4
+    local method=$5
+    local output_file="$RESULTS_DIR/${name}_${scenario_name}_${TIMESTAMP}.txt"
     
     echo -e "\n${BLUE}Benchmarking $name server...${NC}"
     echo "  Endpoint: $method $endpoint"
@@ -101,70 +112,87 @@ WRKSCRIPT
     cat "$output_file"
 }
 
+start_cpp_server() {
+    echo -e "${YELLOW}Starting C++ server...${NC}"
+    local cpp_server="../example/echo_server"
+    if [ ! -f "$cpp_server" ]; then
+        echo -e "${RED}Error: Could not find echo_server binary${NC}"
+        echo "Please build it first in example/: cmake . && make"
+        exit 1
+    fi
+
+    cd "$(dirname "$cpp_server")"
+    ./"$(basename "$cpp_server")" &
+    CPP_PID=$!
+    cd "$SCRIPT_DIR"
+
+    if ! kill -0 "$CPP_PID" 2>/dev/null; then
+        echo -e "${RED}✗${NC} C++ server failed to start"
+        exit 1
+    fi
+
+    sleep 2
+    if ! check_server "$CPP_PORT" "C++"; then
+        stop_cpp_server
+        exit 1
+    fi
+}
+
+start_rust_server() {
+    echo -e "\n${YELLOW}Starting Rust Tokio server...${NC}"
+    cd "rust_server"
+    echo "Building Rust server..."
+    cargo build --release
+    ./target/release/tokio-echo-server &
+    RUST_PID=$!
+    cd "$SCRIPT_DIR"
+
+    if ! kill -0 "$RUST_PID" 2>/dev/null; then
+        echo -e "${RED}✗${NC} Rust Tokio server failed to start"
+        exit 1
+    fi
+
+    sleep 2
+    if ! check_server "$RUST_PORT" "Rust Tokio"; then
+        stop_rust_server
+        exit 1
+    fi
+}
+
 test_scenarios=(
     "GET:/echo:GET"
     "POST:/echo:POST"
 )
 
-echo -e "${YELLOW}Starting C++ server...${NC}"
-CPP_SERVER=""
-if [ -f "../example/build/echo_server" ]; then
-    CPP_SERVER="../example/build/echo_server"
-elif [ -f "../example/echo_server" ]; then
-    CPP_SERVER="../example/echo_server"
-else
-    echo -e "${RED}Error: Could not find echo_server binary${NC}"
-    echo "Please build it first: cd ../example && cmake -B build && cmake --build build"
-    exit 1
-fi
-
-cd "$(dirname "$CPP_SERVER")"
-./$(basename "$CPP_SERVER") &
-CPP_PID=$!
-cd "$SCRIPT_DIR"
-
-if ! kill -0 "$CPP_PID" 2>/dev/null; then
-    echo -e "${RED}✗${NC} C++ server failed to start"
-    exit 1
-fi
-
-sleep 2
-if ! check_server $CPP_PORT "C++"; then
-    kill $CPP_PID 2>/dev/null || true
-    exit 1
-fi
-
-echo -e "\n${YELLOW}Starting Rust Tokio server...${NC}"
-cd "$(dirname "$0")/rust_server"
-echo "Building Rust server..."
-cargo build --release
-./target/release/tokio-echo-server &
-RUST_PID=$!
-cd - > /dev/null
-
-if ! kill -0 "$RUST_PID" 2>/dev/null; then
-    echo -e "${RED}✗${NC} Rust Tokio server failed to start"
-    exit 1
-fi
-
-sleep 2
-if ! check_server $RUST_PORT "Rust Tokio"; then
-    kill $CPP_PID $RUST_PID 2>/dev/null || true
-    exit 1
-fi
+start_cpp_server
 
 for scenario in "${test_scenarios[@]}"; do
     IFS=':' read -r name endpoint method <<< "$scenario"
     
     echo -e "\n${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${YELLOW}Scenario: $method $endpoint${NC}"
+    echo -e "${YELLOW}Scenario: C++ $method $endpoint${NC}"
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     
-    run_benchmark "cpp" $CPP_PORT "$endpoint" "$method"
-    sleep 2
-    run_benchmark "rust" $RUST_PORT "$endpoint" "$method"
+    run_benchmark "cpp" "$name" "$CPP_PORT" "$endpoint" "$method"
     sleep 2
 done
+
+stop_cpp_server
+
+start_rust_server
+
+for scenario in "${test_scenarios[@]}"; do
+    IFS=':' read -r name endpoint method <<< "$scenario"
+    
+    echo -e "\n${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}Scenario: Rust $method $endpoint${NC}"
+    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    
+    run_benchmark "rust" "$name" "$RUST_PORT" "$endpoint" "$method"
+    sleep 2
+done
+
+stop_rust_server
 
 echo -e "\n${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BLUE}Generating comparison report...${NC}"
@@ -189,8 +217,8 @@ for scenario in "${test_scenarios[@]}"; do
     echo "" >> "$COMPARE_FILE"
     echo "=== $method $endpoint ===" >> "$COMPARE_FILE"
     
-    cpp_file=$(ls -t "$RESULTS_DIR"/cpp_*_${TIMESTAMP}.txt 2>/dev/null | head -1)
-    rust_file=$(ls -t "$RESULTS_DIR"/rust_*_${TIMESTAMP}.txt 2>/dev/null | head -1)
+    cpp_file="$RESULTS_DIR/cpp_${name}_${TIMESTAMP}.txt"
+    rust_file="$RESULTS_DIR/rust_${name}_${TIMESTAMP}.txt"
     
     if [ -f "$cpp_file" ]; then
         echo -e "\n[C++ Server]" >> "$COMPARE_FILE"
