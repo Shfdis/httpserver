@@ -3,6 +3,10 @@
 #include "request_data.h"
 namespace HTTP {
 Trie::Node &Trie::Node::Move(char c) {
+  if (c == '*') {
+    any = true;
+    return *this;
+  }
   if (!children.contains(c)) {
     children[c] = std::make_unique<Node>();
   }

@@ -1,7 +1,6 @@
+#include "request_data.h"
 #include "server.h"
 #include <future>
-#include <string_view>
-
 int main() {
   HTTP::ServerBuilder builder;
   builder.SetPort(8080);
@@ -22,6 +21,13 @@ int main() {
     }
     return response;
   });
+  builder.AddRequest(HTTP::GET, "/echo/*/echo",
+                     [](const HTTP::RequestData &request) {
+                       HTTP::ResponseData response;
+                       response.body = request.urlVariables.at(0);
+                       response.status = 200;
+                       return response;
+                     });
   auto server = builder.Build();
   server.Start();
   std::promise<void> keep_alive;

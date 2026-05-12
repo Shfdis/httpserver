@@ -61,7 +61,7 @@ void IOUring::Poll() {
   try {
     AddEntries();
     
-    if (inProcess_.load() > 0) {
+    if (inProcess_ > 0) {
       ProcessCalls();
     }
     

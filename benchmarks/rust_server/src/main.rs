@@ -32,7 +32,6 @@ async fn handle_request(
             // Set headers
             let headers = response.headers_mut();
             headers.insert("Content-Length", body_len.to_string().parse().unwrap());
-            headers.insert("Connection", "close".parse().unwrap());
             
             Ok(response)
         }
@@ -54,7 +53,6 @@ async fn handle_request(
             // Set headers
             let headers = response.headers_mut();
             headers.insert("Content-Length", body_len.to_string().parse().unwrap());
-            headers.insert("Connection", "close".parse().unwrap());
             
             Ok(response)
         }
@@ -63,7 +61,6 @@ async fn handle_request(
             *response.status_mut() = StatusCode::NOT_FOUND;
             let headers = response.headers_mut();
             headers.insert("Content-Length", "9".parse().unwrap());
-            headers.insert("Connection", "close".parse().unwrap());
             Ok(response)
         }
     }
@@ -84,6 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Spawn each connection handler immediately without waiting
         tokio::task::spawn(async move {
             if let Err(err) = http1::Builder::new()
+                .keep_alive(true)
                 .serve_connection(io, service_fn(handle_request))
                 .await
             {

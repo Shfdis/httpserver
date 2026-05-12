@@ -1,0 +1,10 @@
+/home/shfdis/httpserver/example/install_dep/lib/libcoro_http_server.a
+/home/shfdis/httpserver/example/install_dep/lib/cmake/coro_http_server/coro_http_serverConfig.cmake
+/home/shfdis/httpserver/example/install_dep/lib/cmake/coro_http_server/coro_http_serverConfig-release.cmake
+/home/shfdis/httpserver/example/install_dep/include/coroutine.h
+/home/shfdis/httpserver/example/install_dep/include/http_error.h
+/home/shfdis/httpserver/example/install_dep/include/io_uring.h
+/home/shfdis/httpserver/example/install_dep/include/read_iterator.h
+/home/shfdis/httpserver/example/install_dep/include/request_data.h
+/home/shfdis/httpserver/example/install_dep/include/server.h
+/home/shfdis/httpserver/example/install_dep/include/trie.h

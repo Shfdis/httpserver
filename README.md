@@ -71,14 +71,14 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_ASAN=OFF
 cmake --build build -j
 
 cd ../benchmarks
-DURATION=10s THREADS=4 CONNECTIONS=100 WRK_TIMEOUT=2s ./benchmark.sh
+DURATION=30s THREADS=4 CONNECTIONS=100 ./benchmark.sh
 ```
 
-Output (2026-01-22, non-ASAN Release build):
+Output (2026-04-02 16:42:45 MSK, non-ASAN Release build):
 
 - **GET /echo**
-  - **C++**: 393013 req/s
-  - **Tokio**: 91060 req/s
+  - **C++**: 427149 req/s
+  - **Tokio**: 500231 req/s
 - **POST /echo**
-  - **C++**: 355954 req/s
-  - **Tokio**: 93576 req/s
+  - **C++**: 387572 req/s
+  - **Tokio**: 452589 req/s
