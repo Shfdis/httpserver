@@ -3,7 +3,7 @@
 #include <exception>
 namespace HTTP {
 struct Promise;
-struct Coroutine;
+struct CoFuture; 
 
 struct Promise {
   std::coroutine_handle<> continuation_;
