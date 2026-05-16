@@ -1,0 +1,6 @@
+CompileFlags:
+  Remove:
+    - -fmodules
+    - -fcxx-modules
+    - -fmodule-map-file=*
+    - -fmodule-file=*

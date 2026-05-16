@@ -24,6 +24,7 @@ add_library(coro_http_server
   src/trie.cpp
   src/server.cpp
 )
+add_library(coro_http_server::coro_http_server ALIAS coro_http_server)
 target_compile_options(coro_http_server PUBLIC -fmodules)
 target_include_directories(coro_http_server PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
