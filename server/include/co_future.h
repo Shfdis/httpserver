@@ -352,14 +352,18 @@ template <typename F>
 auto RunCoroInThread(F &&func) -> CoFuture<std::invoke_result_t<std::decay_t<F> &>> {
   using Func = std::decay_t<F>;
   using T = std::invoke_result_t<Func &>;
-  static_assert(!std::is_void_v<T>, "CoFuture<void> is not supported");
 
   auto promise = std::make_shared<CoPromise<T>>();
   auto future = promise->GetFuture();
   try {
     std::thread([promise, func = std::forward<F>(func)]() mutable {
       try {
-        promise->Set(std::invoke(func));
+        if constexpr (std::is_void_v<T>) {
+          std::invoke(func);
+          promise->Set();
+        } else {
+          promise->Set(std::invoke(func));
+        }
       } catch (...) {
         promise->SetException(std::current_exception());
       }
