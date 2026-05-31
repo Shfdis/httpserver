@@ -1,17 +1,14 @@
 #include "io_uring.h"
-#include "coroutine.h"
 #include <cerrno>
 #include <cstddef>
 #include <iostream>
 #include <liburing/io_uring.h>
-#include <optional>
 #include <stdexcept>
 #include <linux/errno.h>
 
 namespace HTTP {
 
 IOUring::~IOUring() {
-  stopToken_ = true;
   io_uring_queue_exit(&ring_);
 }
 
@@ -35,8 +32,7 @@ void IOUring::AddEntries() {
     }
     
     SqeData *sqeData = new SqeData{
-        entry.fd, entry.type, entry.coro, std::move(entry.writeData), entry.writeOffset,
-        entry.writeLen};
+        std::move(entry.complete), std::move(entry.writeData), entry.writeOffset, entry.writeLen};
     
     if (entry.type == IOUring::READ) [[likely]] {
       io_uring_prep_read(sqEntry, entry.fd, entry.toRead.value(), 256, 0);
@@ -78,7 +74,7 @@ void IOUring::Poll() {
 }
 
 void IOUring::Write(int fileDescriptor, std::shared_ptr<std::string> data, size_t offset,
-                    size_t len, std::coroutine_handle<> coro) {
+                    size_t len, std::function<void(int)> complete) {
   if (fileDescriptor < 0) {
     throw std::runtime_error("Invalid file descriptor");
   }
@@ -88,12 +84,13 @@ void IOUring::Write(int fileDescriptor, std::shared_ptr<std::string> data, size_
   entry.writeData = std::move(data);
   entry.writeOffset = offset;
   entry.writeLen = len;
-  entry.coro = coro;
+  entry.complete = std::move(complete);
   queue_.push_back(std::move(entry));
   AddEntries();
 }
 
-void IOUring::Read(int fileDescriptor, std::array<char, 256> &buffer, std::coroutine_handle<> coro) {
+void IOUring::Read(int fileDescriptor, std::array<char, 256> &buffer,
+                   std::function<void(int)> complete) {
   if (fileDescriptor < 0) {
     throw std::runtime_error("Invalid file descriptor");
   }
@@ -101,48 +98,48 @@ void IOUring::Read(int fileDescriptor, std::array<char, 256> &buffer, std::corou
   entry.type = IOUring::READ;
   entry.fd = fileDescriptor;
   entry.toRead = buffer.begin();
-  entry.coro = coro;
+  entry.complete = std::move(complete);
   queue_.push_back(entry);
 }
 
-ReadAwaiter IOUring::ReadAsync(int fileDescriptor, std::array<char, 256> &buffer) {
-  return ReadAwaiter(*this, fileDescriptor, buffer);
+CoFuture<size_t> IOUring::ReadAsync(int fileDescriptor, std::array<char, 256> &buffer) {
+  auto promise = std::make_shared<CoPromise<size_t>>();
+  auto future = promise->GetFuture();
+  Read(fileDescriptor, buffer, [promise](int result) {
+    promise->Set(result < 0 ? 0 : static_cast<size_t>(result));
+  });
+  return future;
 }
 
-void ReadAwaiter::await_suspend(std::coroutine_handle<> h) {
-  coro_ = std::coroutine_handle<Promise>::from_address(h.address());
-  ring_.Read(fd_, buffer_, h);
-}
-
-void AcceptAwaiter::await_suspend(std::coroutine_handle<> h) {
-  coro_ = std::coroutine_handle<Promise>::from_address(h.address());
-  ring_.Accept(fd_, h);
-}
-
-void WriteAwaiter::await_suspend(std::coroutine_handle<> h) {
-  coro_ = std::coroutine_handle<Promise>::from_address(h.address());
-  ring_.Write(fd_, std::move(data_), offset_, len_, h);
-}
-
-void IOUring::Accept(int fileDescriptor, std::coroutine_handle<> coro) {
+void IOUring::Accept(int fileDescriptor, std::function<void(int)> complete) {
   if (fileDescriptor < 0) {
     throw std::runtime_error("Invalid file descriptor");
   }
   Entry entry;
   entry.type = IOUring::ACCEPT;
   entry.fd = fileDescriptor;
-  entry.coro = coro;
+  entry.complete = std::move(complete);
   queue_.push_back(entry);
   AddEntries();
 }
 
-AcceptAwaiter IOUring::AcceptAsync(int fileDescriptor) {
-  return AcceptAwaiter(*this, fileDescriptor);
+CoFuture<int> IOUring::AcceptAsync(int fileDescriptor) {
+  auto promise = std::make_shared<CoPromise<int>>();
+  auto future = promise->GetFuture();
+  Accept(fileDescriptor, [promise](int result) {
+    promise->Set(result);
+  });
+  return future;
 }
 
-WriteAwaiter IOUring::WriteAsync(int fileDescriptor, std::shared_ptr<std::string> data,
-                                 size_t offset, size_t len) {
-  return WriteAwaiter(*this, fileDescriptor, std::move(data), offset, len);
+CoFuture<size_t> IOUring::WriteAsync(int fileDescriptor, std::shared_ptr<std::string> data,
+                                     size_t offset, size_t len) {
+  auto promise = std::make_shared<CoPromise<size_t>>();
+  auto future = promise->GetFuture();
+  Write(fileDescriptor, std::move(data), offset, len, [promise](int result) {
+    promise->Set(result < 0 ? 0 : static_cast<size_t>(result));
+  });
+  return future;
 }
 
 void IOUring::ProcessCalls() {
@@ -163,52 +160,14 @@ void IOUring::ProcessCalls() {
     return;
   }
   
-  int fd = sqeData->fd;
-  OpType opType = sqeData->opType;
   int result = cqEntry->res;
-  std::coroutine_handle<> coroToResume = sqeData->coro;
+  auto complete = std::move(sqeData->complete);
   
   delete sqeData;
   io_uring_cqe_seen(&ring_, cqEntry);
   
-  if (result < 0) {
-    if (coroToResume && !coroToResume.done()) {
-      if (opType == IOUring::ACCEPT) {
-        auto promise = std::coroutine_handle<Promise>::from_address(coroToResume.address());
-        promise.promise().acceptResult_ = result;
-      } else if (opType == IOUring::READ) {
-        auto promise = std::coroutine_handle<Promise>::from_address(coroToResume.address());
-        promise.promise().readResult_ = 0;
-      } else {
-        auto promise = std::coroutine_handle<Promise>::from_address(coroToResume.address());
-        promise.promise().writeResult_ = 0;
-      }
-      try {
-        coroToResume.resume();
-      } catch (...) {}
-    }
-    return;
-  }
-  
-  if (opType == IOUring::ACCEPT) {
-    auto promise = std::coroutine_handle<Promise>::from_address(coroToResume.address());
-    promise.promise().acceptResult_ = result;
-  } else if (opType == IOUring::READ) {
-    auto promise = std::coroutine_handle<Promise>::from_address(coroToResume.address());
-    promise.promise().readResult_ = result;
-  } else {
-    auto promise = std::coroutine_handle<Promise>::from_address(coroToResume.address());
-    promise.promise().writeResult_ = static_cast<size_t>(result);
-  }
-  
-  if (coroToResume && !coroToResume.done()) {
-    try {
-      coroToResume.resume();
-    } catch (const std::exception &e) {
-      std::cerr << "[ProcessCalls] Exception during resume: " << e.what() << std::endl;
-    } catch (...) {
-      std::cerr << "[ProcessCalls] Unknown exception during resume" << std::endl;
-    }
+  if (complete) {
+    complete(result);
   }
 }
 

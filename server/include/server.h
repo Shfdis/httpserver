@@ -1,11 +1,11 @@
 #pragma once
-#include "coroutine.h"
+#include "co_future.h"
 #include "io_uring.h"
 #include "read_iterator.h"
 #include "request_data.h"
 #include "trie.h"
 #include <atomic>
-#include <thread>
+#include <memory>
 #include <vector>
 namespace HTTP {
 class Server {
@@ -14,23 +14,23 @@ private:
   int port_{0};
   int numThreads_{1};
   Trie trie_;
-  std::vector<std::thread> workerThreads_;
+  std::vector<CoFuture<void>> workerFutures_;
   std::atomic_bool stopFlag_{false};
-  std::atomic_int pendingAccepts_{0};
+  std::shared_ptr<CoPromise<void>> serverLoop_;
   
   void WorkerLoop(IOUring &ring);
-  Coroutine AcceptAndProcess(IOUring &ring);
-  Coroutine GetHandler(RequestData &data, ReadIterator &iter, RespondType &handler);
-  Coroutine WriteResponse(IOUring &ring, int connectionFD, const ResponseData &data,
-                          bool keepAlive);
-  Coroutine Process(IOUring &ring, int connectionFD);
+  CoFuture<void> AcceptAndProcess(IOUring &ring);
+  CoFuture<void> GetHandler(RequestData &data, ReadIterator &iter, RespondType &handler);
+  CoFuture<void> WriteResponse(IOUring &ring, int connectionFD, const ResponseData &data,
+                               bool keepAlive);
+  CoFuture<void> Process(IOUring &ring, int connectionFD);
   friend class ServerBuilder;
 
 public:
   Server() = default;
   ~Server();
   Server(Server &&rhs);
-  void Start();
+  CoFuture<void> Start();
 };
 class ServerBuilder {
 private:

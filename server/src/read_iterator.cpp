@@ -6,7 +6,7 @@ namespace HTTP {
 ReadIterator::ReadIterator(IOUring &ring, int fd_) : ring_(ring), fd_(fd_), length_(0), position_(0) {
 }
 
-Coroutine ReadIterator::Ensure() {
+CoFuture<void> ReadIterator::Ensure() {
   if (position_ >= length_) {
     length_ = co_await ring_.ReadAsync(fd_, buffer_);
     position_ = 0;
@@ -28,7 +28,7 @@ void ReadIterator::Advance(size_t n) {
   position_ += n;
 }
 
-Coroutine ReadIterator::operator++() {
+CoFuture<void> ReadIterator::operator++() {
   ++position_;
   co_return;
 }
@@ -44,7 +44,7 @@ char ReadIterator::operator*() {
   return buffer_.at(position_);
 }
 
-Coroutine ReadIterator::ParseMethod(RequestData &data) {
+CoFuture<void> ReadIterator::ParseMethod(RequestData &data) {
   co_await Ensure();
   if (length_ == 0) {
     throw HTTPError(400, "Invalid request");
@@ -96,7 +96,7 @@ Coroutine ReadIterator::ParseMethod(RequestData &data) {
   throw HTTPError(400, "Invalid request");
 }
 
-Coroutine ReadIterator::ParseVariables(RequestData &data) {
+CoFuture<void> ReadIterator::ParseVariables(RequestData &data) {
   co_await Ensure();
   if (**this != '?' && **this != ' ') {
     throw HTTPError(400, "Invalid request");
@@ -141,7 +141,7 @@ Coroutine ReadIterator::ParseVariables(RequestData &data) {
   co_return;
 }
 
-Coroutine ReadIterator::ParseHeaders(RequestData &data) {
+CoFuture<void> ReadIterator::ParseHeaders(RequestData &data) {
   enum { Name, Value } current = Name;
   std::string name;
   std::string *value;
@@ -184,7 +184,7 @@ Coroutine ReadIterator::ParseHeaders(RequestData &data) {
   co_return;
 }
 
-Coroutine ReadIterator::ParseBody(RequestData &data) {
+CoFuture<void> ReadIterator::ParseBody(RequestData &data) {
   auto it = data.headers.find("Content-Length");
   if (it != data.headers.end()) {
     try {
