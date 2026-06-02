@@ -38,8 +38,8 @@ void IOUring::AddEntries() {
       io_uring_prep_read(sqEntry, entry.fd, entry.toRead.value(), 256, 0);
     } else if (entry.type == IOUring::ACCEPT) {
       io_uring_prep_accept(sqEntry, entry.fd, nullptr, nullptr, 0);
-    } else {
-      const char *ptr = sqeData->writeData->data() + sqeData->writeOffset;
+    } else [[likely]] {
+      const char *ptr = sqeData->writeData.data() + sqeData->writeOffset;
       io_uring_prep_write(sqEntry, entry.fd, ptr, sqeData->writeLen, 0);
     }
     io_uring_sqe_set_data(sqEntry, sqeData);
@@ -73,7 +73,7 @@ void IOUring::Poll() {
   }
 }
 
-void IOUring::Write(int fileDescriptor, std::shared_ptr<std::string> data, size_t offset,
+void IOUring::Write(int fileDescriptor, std::string_view data, size_t offset,
                     size_t len, std::function<void(int)> complete) {
   if (fileDescriptor < 0) {
     throw std::runtime_error("Invalid file descriptor");
@@ -81,7 +81,7 @@ void IOUring::Write(int fileDescriptor, std::shared_ptr<std::string> data, size_
   Entry entry;
   entry.type = IOUring::WRITE;
   entry.fd = fileDescriptor;
-  entry.writeData = std::move(data);
+  entry.writeData = data;
   entry.writeOffset = offset;
   entry.writeLen = len;
   entry.complete = std::move(complete);
@@ -102,11 +102,11 @@ void IOUring::Read(int fileDescriptor, std::array<char, 256> &buffer,
   queue_.push_back(entry);
 }
 
-CoFuture<size_t> IOUring::ReadAsync(int fileDescriptor, std::array<char, 256> &buffer) {
-  auto promise = std::make_shared<CoPromise<size_t>>();
+CoFuture<int> IOUring::ReadAsync(int fileDescriptor, std::array<char, 256> &buffer) {
+  auto promise = std::make_shared<CoPromise<int>>();
   auto future = promise->GetFuture();
   Read(fileDescriptor, buffer, [promise](int result) {
-    promise->Set(result < 0 ? 0 : static_cast<size_t>(result));
+    promise->Set(result);
   });
   return future;
 }
@@ -132,12 +132,12 @@ CoFuture<int> IOUring::AcceptAsync(int fileDescriptor) {
   return future;
 }
 
-CoFuture<size_t> IOUring::WriteAsync(int fileDescriptor, std::shared_ptr<std::string> data,
+CoFuture<int> IOUring::WriteAsync(int fileDescriptor, std::string_view data,
                                      size_t offset, size_t len) {
-  auto promise = std::make_shared<CoPromise<size_t>>();
+  auto promise = std::make_shared<CoPromise<int>>();
   auto future = promise->GetFuture();
-  Write(fileDescriptor, std::move(data), offset, len, [promise](int result) {
-    promise->Set(result < 0 ? 0 : static_cast<size_t>(result));
+  Write(fileDescriptor, data, offset, len, [promise](int result) {
+    promise->Set(result);
   });
   return future;
 }

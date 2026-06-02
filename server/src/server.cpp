@@ -3,6 +3,7 @@
 #include "read_iterator.h"
 #include "request_data.h"
 #include "trie.h"
+#include <cerrno>
 #include <cctype>
 #include <csignal>
 #include <iostream>
@@ -11,6 +12,7 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <system_error>
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
@@ -61,6 +63,12 @@ static bool wants_close(const RequestData &request) {
   for (auto &ch : value)
     ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
   return value.find("close") != std::string::npos;
+}
+
+constexpr int kMaxIoAttempts = 3;
+
+bool IsRetryableIoError(int result) {
+  return result == -EINTR || result == -EAGAIN || result == -EWOULDBLOCK;
 }
 } // namespace
 
@@ -136,15 +144,24 @@ CoFuture<void> Server::WriteResponse(IOUring &ring, int connectionFD, const Resp
   }
   text << "\r\n";
   text << data.body;
-  auto final = std::make_shared<std::string>(text.str());
+  std::string final = text.str();
   size_t sent = 0;
-  while (sent < final->size()) {
-    size_t wrote = co_await ring.WriteAsync(connectionFD, final, sent,
-                                            final->size() - sent);
-    if (wrote == 0) {
+  int attempts = 0;
+  while (sent < final.size()) {
+    int result = co_await ring.WriteAsync(connectionFD, final, sent,
+                                          final.size() - sent);
+    if (result > 0) {
+      sent += static_cast<size_t>(result);
+      attempts = 0;
+      continue;
+    }
+    if (result == 0) {
       break;
     }
-    sent += wrote;
+    ++attempts;
+    if (!IsRetryableIoError(result) || attempts >= kMaxIoAttempts) {
+      throw std::system_error(-result, std::generic_category(), "write failed");
+    }
   }
   co_return;
 }
@@ -198,6 +215,11 @@ CoFuture<void> Server::Process(IOUring &ring, int connectionFD) {
       response.body = error.message;
       mustClose = true;
       keepAlive = false;
+    } catch (const std::system_error &) {
+      response.status = 500;
+      response.body = "Internal server error";
+      mustClose = true;
+      keepAlive = false;
     } catch (std::runtime_error &error) {
       response.status = 500;
       response.body = error.what();
@@ -211,7 +233,12 @@ CoFuture<void> Server::Process(IOUring &ring, int connectionFD) {
     }
 
     if (!mustClose || response.status != 400 || !response.body.empty()) {
-      co_await WriteResponse(ring, connectionFD, response, keepAlive);
+      try {
+        co_await WriteResponse(ring, connectionFD, response, keepAlive);
+      } catch (const std::system_error &) {
+        mustClose = true;
+        keepAlive = false;
+      }
     }
     if (!keepAlive || mustClose) {
       (void)shutdown(connectionFD, SHUT_WR);

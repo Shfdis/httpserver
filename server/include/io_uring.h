@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #define QUEUE_DEPTH 1024
 namespace HTTP {
 class IOUring;
@@ -22,13 +23,13 @@ private:
     int fd;
     std::optional<char *> toRead;
     std::function<void(int)> complete;
-    std::shared_ptr<std::string> writeData;
+    std::string_view writeData;
     size_t writeOffset{0};
     size_t writeLen{0};
   };
   struct SqeData {
     std::function<void(int)> complete;
-    std::shared_ptr<std::string> writeData;
+    std::string_view writeData;
     size_t writeOffset{0};
     size_t writeLen{0};
   };
@@ -44,10 +45,10 @@ public:
   IOUring();
   IOUring &operator=(IOUring &&rhs);
   void Read(int fileDescriptor, std::array<char, 256> &buffer, std::function<void(int)> complete);
-  CoFuture<size_t> ReadAsync(int fileDescriptor, std::array<char, 256> &buffer);
-  void Write(int fileDescriptor, std::shared_ptr<std::string> data, size_t offset, size_t len,
+  CoFuture<int> ReadAsync(int fileDescriptor, std::array<char, 256> &buffer);
+  void Write(int fileDescriptor, std::string_view data, size_t offset, size_t len,
              std::function<void(int)> complete);
-  CoFuture<size_t> WriteAsync(int fileDescriptor, std::shared_ptr<std::string> data, size_t offset,
+  CoFuture<int> WriteAsync(int fileDescriptor, std::string_view data, size_t offset,
                               size_t len);
   void Accept(int fileDescriptor, std::function<void(int)> complete);
   CoFuture<int> AcceptAsync(int fileDescriptor);
