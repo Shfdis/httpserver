@@ -18,11 +18,11 @@ compile_commands.json
 echo_server
 
 # IDE/Editor
-.cache/
-.vscode/
-.idea/
-.agents/
-.codex/
+*.cache/
+*.vscode/
+*.idea/
+*.agents/
+*.codex/
 *.swp
 *.swo
 *~

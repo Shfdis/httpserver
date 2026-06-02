@@ -259,8 +259,8 @@ CoFuture<void> Server::GetHandler(RequestData &data, ReadIterator &iter, Respond
   if (*iter != '/') {
     throw HTTPError(400, "Invalid request");
   }
-  auto current = &trie_.GetRoot();
-  bool inVariable = false;
+  std::string path;
+  path.reserve(64);
   while (true) {
     co_await iter.Ensure();
     if (!iter) {
@@ -270,23 +270,10 @@ CoFuture<void> Server::GetHandler(RequestData &data, ReadIterator &iter, Respond
     if (c == ' ' || c == '?') {
       break;
     }
-    if (!current->children.contains(c) && current->any) {
-      if (!inVariable) {
-        inVariable = true;
-        data.urlVariables.push_back("");
-      }
-      data.urlVariables.back().push_back(c);
-      co_await ++iter;
-      continue;
-    }
-    inVariable = false;
-    current = &current->Move(c);
+    path.push_back(c);
     co_await ++iter;
   }
-  if (!current->handlers[data.method]) {
-    throw HTTPError(404, "Not found");
-  }
-  handler = *current->handlers[data.method];
+  handler = trie_.Match(data.method, path, data.urlVariables);
   co_return;
 }
 
