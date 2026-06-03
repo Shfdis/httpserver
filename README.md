@@ -42,10 +42,7 @@ int main() {
   });
   
   auto server = builder.Build();
-  server.Start();
-  
-  // Keep running
-  std::promise<void>().get_future().wait();
+  server.Start().Get();
 }
 ```
 ## Benchmarks

@@ -1,6 +1,6 @@
 #include "request_data.h"
 #include "server.h"
-#include <future>
+#include <string_view>
 int main() {
   HTTP::ServerBuilder builder;
   builder.SetPort(8080);
@@ -29,8 +29,6 @@ int main() {
                        return response;
                      });
   auto server = builder.Build();
-  server.Start();
-  std::promise<void> keep_alive;
-  keep_alive.get_future().wait();
+  server.Start().Get();
   return 0;
 }

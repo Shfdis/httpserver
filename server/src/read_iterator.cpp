@@ -1,14 +1,41 @@
 #include "read_iterator.h"
 #include "http_error.h"
 #include <algorithm>
+#include <cerrno>
+#include <stdexcept>
 #include <string>
+#include <system_error>
 namespace HTTP {
+
+namespace {
+constexpr int kMaxIoAttempts = 3;
+
+bool IsRetryableIoError(int result) {
+  return result == -EINTR || result == -EAGAIN || result == -EWOULDBLOCK;
+}
+} // namespace
+
 ReadIterator::ReadIterator(IOUring &ring, int fd_) : ring_(ring), fd_(fd_), length_(0), position_(0) {
 }
 
-Coroutine ReadIterator::Ensure() {
+CoFuture<void> ReadIterator::Ensure() {
   if (position_ >= length_) {
-    length_ = co_await ring_.ReadAsync(fd_, buffer_);
+    for (int attempt = 1; attempt <= kMaxIoAttempts; ++attempt) {
+      int result = co_await ring_.ReadAsync(fd_, buffer_);
+      if (result > 0) {
+        length_ = static_cast<size_t>(result);
+        position_ = 0;
+        co_return;
+      }
+      if (result == 0) {
+        length_ = 0;
+        position_ = 0;
+        co_return;
+      }
+      if (!IsRetryableIoError(result) || attempt == kMaxIoAttempts) {
+        throw std::system_error(-result, std::generic_category(), "read failed");
+      }
+    }
     position_ = 0;
   }
   co_return;
@@ -28,7 +55,7 @@ void ReadIterator::Advance(size_t n) {
   position_ += n;
 }
 
-Coroutine ReadIterator::operator++() {
+CoFuture<void> ReadIterator::operator++() {
   ++position_;
   co_return;
 }
@@ -44,7 +71,7 @@ char ReadIterator::operator*() {
   return buffer_.at(position_);
 }
 
-Coroutine ReadIterator::ParseMethod(RequestData &data) {
+CoFuture<void> ReadIterator::ParseMethod(RequestData &data) {
   co_await Ensure();
   if (length_ == 0) {
     throw HTTPError(400, "Invalid request");
@@ -96,7 +123,7 @@ Coroutine ReadIterator::ParseMethod(RequestData &data) {
   throw HTTPError(400, "Invalid request");
 }
 
-Coroutine ReadIterator::ParseVariables(RequestData &data) {
+CoFuture<void> ReadIterator::ParseVariables(RequestData &data) {
   co_await Ensure();
   if (**this != '?' && **this != ' ') {
     throw HTTPError(400, "Invalid request");
@@ -141,7 +168,7 @@ Coroutine ReadIterator::ParseVariables(RequestData &data) {
   co_return;
 }
 
-Coroutine ReadIterator::ParseHeaders(RequestData &data) {
+CoFuture<void> ReadIterator::ParseHeaders(RequestData &data) {
   enum { Name, Value } current = Name;
   std::string name;
   std::string *value;
@@ -184,33 +211,37 @@ Coroutine ReadIterator::ParseHeaders(RequestData &data) {
   co_return;
 }
 
-Coroutine ReadIterator::ParseBody(RequestData &data) {
+CoFuture<void> ReadIterator::ParseBody(RequestData &data) {
   auto it = data.headers.find("Content-Length");
   if (it != data.headers.end()) {
+    size_t length;
     try {
-      size_t length = std::stoul(it->second);
-      data.body.clear();
-      data.body.reserve(length);
+      length = std::stoul(it->second);
+    } catch (const std::invalid_argument &) {
+      co_return;
+    } catch (const std::out_of_range &) {
+      co_return;
+    }
+    data.body.clear();
+    data.body.reserve(length);
+    co_await Ensure();
+    if (*this && (**this == '\n' || **this == '\r')) {
+      co_await ++*this;
       co_await Ensure();
       if (*this && (**this == '\n' || **this == '\r')) {
         co_await ++*this;
-        co_await Ensure();
-        if (*this && (**this == '\n' || **this == '\r')) {
-          co_await ++*this;
-        }
       }
-      size_t remaining = length;
-      while (remaining > 0) {
-        co_await Ensure();
-        if (!*this) break;
-        size_t avail = Available();
-        if (avail == 0) continue;
-        size_t take = std::min(avail, remaining);
-        data.body.append(CurrentPtr(), take);
-        Advance(take);
-        remaining -= take;
-      }
-    } catch (...) {
+    }
+    size_t remaining = length;
+    while (remaining > 0) {
+      co_await Ensure();
+      if (!*this) break;
+      size_t avail = Available();
+      if (avail == 0) continue;
+      size_t take = std::min(avail, remaining);
+      data.body.append(CurrentPtr(), take);
+      Advance(take);
+      remaining -= take;
     }
     co_return;
   }

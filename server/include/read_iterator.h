@@ -1,5 +1,5 @@
 #pragma once
-#include "coroutine.h"
+#include "co_future.h"
 #include "io_uring.h"
 #include "request_data.h"
 namespace HTTP {
@@ -12,16 +12,16 @@ class ReadIterator {
 
 public:
   ReadIterator(IOUring &ring, int fd_);
-  Coroutine Ensure();
+  CoFuture<void> Ensure();
   size_t Available() const;
   const char *CurrentPtr() const;
   void Advance(size_t n);
-  Coroutine operator++();
+  CoFuture<void> operator++();
   char operator*();
   operator bool();
-  Coroutine ParseVariables(RequestData &data);
-  Coroutine ParseHeaders(RequestData &data);
-  Coroutine ParseMethod(RequestData &data);
-  Coroutine ParseBody(RequestData &data);
+  CoFuture<void> ParseVariables(RequestData &data);
+  CoFuture<void> ParseHeaders(RequestData &data);
+  CoFuture<void> ParseMethod(RequestData &data);
+  CoFuture<void> ParseBody(RequestData &data);
 };
-}; // namespace HTTP
+};

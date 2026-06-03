@@ -1,10 +1,9 @@
 #include "server.h"
-#include "coroutine.h"
 #include "http_error.h"
 #include "read_iterator.h"
 #include "request_data.h"
 #include "trie.h"
-#include <algorithm>
+#include <cerrno>
 #include <cctype>
 #include <csignal>
 #include <iostream>
@@ -13,10 +12,10 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <system_error>
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
-#include <vector>
 
 namespace HTTP {
 
@@ -65,6 +64,12 @@ static bool wants_close(const RequestData &request) {
     ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
   return value.find("close") != std::string::npos;
 }
+
+constexpr int kMaxIoAttempts = 3;
+
+bool IsRetryableIoError(int result) {
+  return result == -EINTR || result == -EAGAIN || result == -EWOULDBLOCK;
+}
 } // namespace
 
 Server::Server(Server &&rhs) {
@@ -73,8 +78,8 @@ Server::Server(Server &&rhs) {
   port_ = rhs.port_;
   numThreads_ = rhs.numThreads_;
   stopFlag_.store(rhs.stopFlag_.load());
-  pendingAccepts_.store(rhs.pendingAccepts_.load());
-  workerThreads_ = std::move(rhs.workerThreads_);
+  workerFutures_ = std::move(rhs.workerFutures_);
+  serverLoop_ = std::move(rhs.serverLoop_);
   rhs.socketFD_ = -1;
 }
 
@@ -85,22 +90,13 @@ Server::~Server() {
     close(socketFD_);
     socketFD_ = -1;
   }
-  for (auto &t : workerThreads_) {
-    if (t.joinable()) {
-      t.join();
-    }
+  for (auto &future : workerFutures_) {
+    future.Get();
   }
 }
 
-Coroutine Server::AcceptAndProcess(IOUring &ring) {
-  static thread_local std::vector<Coroutine> processCoros;
-
+CoFuture<void> Server::AcceptAndProcess(IOUring &ring) {
   while (!stopFlag_.load()) {
-    processCoros.erase(
-        std::remove_if(processCoros.begin(), processCoros.end(),
-                       [](const Coroutine &c) { return !c || c.done(); }),
-        processCoros.end());
-
     int connectionFD = co_await ring.AcceptAsync(socketFD_);
 
     if (connectionFD < 0) {
@@ -110,24 +106,20 @@ Coroutine Server::AcceptAndProcess(IOUring &ring) {
       continue;
     }
 
-    Coroutine proc = Process(ring, connectionFD);
-    proc.resume();
-    processCoros.push_back(std::move(proc));
+    Process(ring, connectionFD);
   }
   co_return;
 }
 
 void Server::WorkerLoop(IOUring &ring) {
   try {
-    Coroutine acceptCoro = AcceptAndProcess(ring);
-    acceptCoro.resume();
-
+    auto acceptCoro = AcceptAndProcess(ring);
+    
     while (!stopFlag_.load()) {
       ring.Poll();
-
-      if (acceptCoro.done()) {
+      
+      if (acceptCoro.isReady()) {
         acceptCoro = AcceptAndProcess(ring);
-        acceptCoro.resume();
       }
     }
   } catch (const std::exception &e) {
@@ -137,8 +129,8 @@ void Server::WorkerLoop(IOUring &ring) {
   }
 }
 
-Coroutine Server::WriteResponse(IOUring &ring, int connectionFD,
-                                const ResponseData &data, bool keepAlive) {
+CoFuture<void> Server::WriteResponse(IOUring &ring, int connectionFD, const ResponseData &data,
+                                     bool keepAlive) {
   std::stringstream text;
   text << "HTTP/1.1 " << data.status << ' '
        << (data.status / 100 == 2 ? "OK" : "ERROR") << "\r\n";
@@ -152,20 +144,29 @@ Coroutine Server::WriteResponse(IOUring &ring, int connectionFD,
   }
   text << "\r\n";
   text << data.body;
-  auto final = std::make_shared<std::string>(text.str());
+  std::string final = text.str();
   size_t sent = 0;
-  while (sent < final->size()) {
-    size_t wrote = co_await ring.WriteAsync(connectionFD, final, sent,
-                                            final->size() - sent);
-    if (wrote == 0) {
+  int attempts = 0;
+  while (sent < final.size()) {
+    int result = co_await ring.WriteAsync(connectionFD, final, sent,
+                                          final.size() - sent);
+    if (result > 0) {
+      sent += static_cast<size_t>(result);
+      attempts = 0;
+      continue;
+    }
+    if (result == 0) {
       break;
     }
-    sent += wrote;
+    ++attempts;
+    if (!IsRetryableIoError(result) || attempts >= kMaxIoAttempts) {
+      throw std::system_error(-result, std::generic_category(), "write failed");
+    }
   }
   co_return;
 }
 
-Coroutine Server::Process(IOUring &ring, int connectionFD) {
+CoFuture<void> Server::Process(IOUring &ring, int connectionFD) {
   ReadIterator iterator(ring, connectionFD);
 
   while (true) {
@@ -214,6 +215,11 @@ Coroutine Server::Process(IOUring &ring, int connectionFD) {
       response.body = error.message;
       mustClose = true;
       keepAlive = false;
+    } catch (const std::system_error &) {
+      response.status = 500;
+      response.body = "Internal server error";
+      mustClose = true;
+      keepAlive = false;
     } catch (std::runtime_error &error) {
       response.status = 500;
       response.body = error.what();
@@ -227,7 +233,12 @@ Coroutine Server::Process(IOUring &ring, int connectionFD) {
     }
 
     if (!mustClose || response.status != 400 || !response.body.empty()) {
-      co_await WriteResponse(ring, connectionFD, response, keepAlive);
+      try {
+        co_await WriteResponse(ring, connectionFD, response, keepAlive);
+      } catch (const std::system_error &) {
+        mustClose = true;
+        keepAlive = false;
+      }
     }
     if (!keepAlive || mustClose) {
       (void)shutdown(connectionFD, SHUT_WR);
@@ -238,8 +249,7 @@ Coroutine Server::Process(IOUring &ring, int connectionFD) {
   co_return;
 }
 
-Coroutine Server::GetHandler(RequestData &data, ReadIterator &iter,
-                             RespondType &handler) {
+CoFuture<void> Server::GetHandler(RequestData &data, ReadIterator &iter, RespondType &handler) {
   co_await iter.Ensure();
   if (*iter != ' ') {
     throw HTTPError(400, "Invalid request");
@@ -249,8 +259,8 @@ Coroutine Server::GetHandler(RequestData &data, ReadIterator &iter,
   if (*iter != '/') {
     throw HTTPError(400, "Invalid request");
   }
-  auto current = &trie_.GetRoot();
-  bool inVariable = false;
+  std::string path;
+  path.reserve(64);
   while (true) {
     co_await iter.Ensure();
     if (!iter) {
@@ -260,23 +270,10 @@ Coroutine Server::GetHandler(RequestData &data, ReadIterator &iter,
     if (c == ' ' || c == '?') {
       break;
     }
-    if (!current->children.contains(c) && current->any) {
-      if (!inVariable) {
-        inVariable = true;
-        data.urlVariables.push_back("");
-      }
-      data.urlVariables.back().push_back(c);
-      co_await ++iter;
-      continue;
-    }
-    inVariable = false;
-    current = &current->Move(c);
+    path.push_back(c);
     co_await ++iter;
   }
-  if (!current->handlers[data.method]) {
-    throw HTTPError(404, "Not found");
-  }
-  handler = *current->handlers[data.method];
+  handler = trie_.Match(data.method, path, data.urlVariables);
   co_return;
 }
 
@@ -298,7 +295,7 @@ Server ServerBuilder::Build() {
   return std::move(server_);
 }
 
-void Server::Start() {
+CoFuture<void> Server::Start() {
   std::signal(SIGPIPE, SIG_IGN);
 
   socketFD_ = socket(AF_INET, SOCK_STREAM, 0);
@@ -321,11 +318,13 @@ void Server::Start() {
     throw std::runtime_error("Could not listen on socket");
   }
   for (int i = 0; i < numThreads_; ++i) {
-    workerThreads_.emplace_back([this] {
+    workerFutures_.push_back(RunCoroInThread([this] {
       IOUring ring;
       WorkerLoop(ring);
-    });
+    }));
   }
+  serverLoop_ = std::make_shared<CoPromise<void>>();
+  return serverLoop_->GetFuture();
 }
 
 } // namespace HTTP
