@@ -19,6 +19,7 @@ pkg_check_modules(LIBURING REQUIRED liburing)
 option(ENABLE_ASAN "Enable AddressSanitizer" OFF)
 add_library(coro_http_server
   src/io_uring.cpp
+  src/http_parser.cpp
   src/read_iterator.cpp
   src/http_error.cpp
   src/trie.cpp
@@ -42,3 +43,31 @@ include(GNUInstallDirs)
 install(TARGETS coro_http_server EXPORT MyServerConfig DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(EXPORT MyServerConfig FILE coro_http_serverConfig.cmake NAMESPACE coro_http_server:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/coro_http_server)
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+if (CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+  set(CORO_HTTP_SERVER_BUILD_TESTS_DEFAULT ON)
+else()
+  set(CORO_HTTP_SERVER_BUILD_TESTS_DEFAULT OFF)
+endif()
+option(CORO_HTTP_SERVER_BUILD_TESTS "Build coro_http_server tests" ${CORO_HTTP_SERVER_BUILD_TESTS_DEFAULT})
+
+if (CORO_HTTP_SERVER_BUILD_TESTS)
+  include(CTest)
+  if (BUILD_TESTING)
+    find_package(Threads REQUIRED)
+
+    add_executable(http_parser_test tests/http_parser_test.cpp)
+    target_link_libraries(http_parser_test PRIVATE coro_http_server::coro_http_server)
+    set_target_properties(http_parser_test PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests
+    )
+    add_test(NAME http_parser_test COMMAND http_parser_test)
+
+    add_executable(http_integration_test tests/http_integration_test.cpp)
+    target_link_libraries(http_integration_test PRIVATE coro_http_server::coro_http_server Threads::Threads)
+    set_target_properties(http_integration_test PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests
+    )
+    add_test(NAME http_integration_test COMMAND http_integration_test)
+  endif()
+endif()
