@@ -63,6 +63,13 @@ if (CORO_HTTP_SERVER_BUILD_TESTS)
     )
     add_test(NAME http_parser_test COMMAND http_parser_test)
 
+    add_executable(stack_future_test tests/stack_future_test.cpp)
+    target_link_libraries(stack_future_test PRIVATE coro_http_server::coro_http_server)
+    set_target_properties(stack_future_test PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests
+    )
+    add_test(NAME stack_future_test COMMAND stack_future_test)
+
     add_executable(http_integration_test tests/http_integration_test.cpp)
     target_link_libraries(http_integration_test PRIVATE coro_http_server::coro_http_server Threads::Threads)
     set_target_properties(http_integration_test PROPERTIES

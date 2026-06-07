@@ -1,6 +1,6 @@
 #pragma once
-#include "co_future.h"
 #include "io_uring.h"
+#include "non_owning_co_future.h"
 namespace HTTP {
 
 class ReadIterator {
@@ -13,7 +13,7 @@ class ReadIterator {
 
 public:
   ReadIterator(IOUring &ring, int fd_);
-  CoFuture<void> operator++();
+  NonOwningCoFuture<void> operator++();
   char operator*() const;
   explicit operator bool() const;
   bool Eof() const;

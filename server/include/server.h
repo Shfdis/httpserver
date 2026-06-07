@@ -2,6 +2,7 @@
 #include "co_future.h"
 #include "http_parser.h"
 #include "io_uring.h"
+#include "non_owning_co_future.h"
 #include "request_data.h"
 #include "trie.h"
 #include <atomic>
@@ -21,13 +22,16 @@ private:
   std::shared_ptr<CoPromise<void>> serverLoop_;
   
   void WorkerLoop(IOUring &ring);
-  CoFuture<void> AcceptAndProcess(IOUring &ring);
-  CoFuture<void> WriteRaw(IOUring &ring, int connectionFD, std::string_view data);
-  CoFuture<void> WriteResponse(IOUring &ring, int connectionFD,
-                               const ResponseData &data,
-                               const RequestData &request, bool keepAlive,
-                               std::string &buffer);
-  CoFuture<void> Process(IOUring &ring, int connectionFD);
+  NonOwningCoFuture<void>
+  AcceptAndProcess(IOUring &ring,
+                   std::vector<NonOwningCoFuture<void>> &connections);
+  NonOwningCoFuture<void> WriteRaw(IOUring &ring, int connectionFD,
+                                   std::string_view data);
+  NonOwningCoFuture<void> WriteResponse(IOUring &ring, int connectionFD,
+                                        const ResponseData &data,
+                                        const RequestData &request,
+                                        bool keepAlive, std::string &buffer);
+  NonOwningCoFuture<void> Process(IOUring &ring, int connectionFD);
   friend class ServerBuilder;
 
 public:

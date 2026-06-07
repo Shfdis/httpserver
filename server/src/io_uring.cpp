@@ -104,14 +104,14 @@ void IOUring::Read(int fileDescriptor,
   queue_.push_back(entry);
 }
 
-CoFuture<int> IOUring::ReadAsync(
+OwningCoFuture<int> IOUring::ReadAsync(
     int fileDescriptor, std::array<char, kReadBufferSize> &buffer) {
-  auto promise = std::make_shared<CoPromise<int>>();
-  auto future = promise->GetFuture();
-  Read(fileDescriptor, buffer, [promise](int result) {
-    promise->Set(result);
-  });
-  return future;
+  return OwningCoFuture<int>(
+      [this, fileDescriptor, &buffer](OwningCoFuture<int> &future) {
+        Read(fileDescriptor, buffer, [&future](int result) {
+          future.Set(result);
+        });
+      });
 }
 
 void IOUring::Accept(int fileDescriptor, std::function<void(int)> complete) {
@@ -126,23 +126,23 @@ void IOUring::Accept(int fileDescriptor, std::function<void(int)> complete) {
   AddEntries();
 }
 
-CoFuture<int> IOUring::AcceptAsync(int fileDescriptor) {
-  auto promise = std::make_shared<CoPromise<int>>();
-  auto future = promise->GetFuture();
-  Accept(fileDescriptor, [promise](int result) {
-    promise->Set(result);
-  });
-  return future;
+OwningCoFuture<int> IOUring::AcceptAsync(int fileDescriptor) {
+  return OwningCoFuture<int>(
+      [this, fileDescriptor](OwningCoFuture<int> &future) {
+        Accept(fileDescriptor, [&future](int result) {
+          future.Set(result);
+        });
+      });
 }
 
-CoFuture<int> IOUring::WriteAsync(int fileDescriptor, std::string_view data,
+OwningCoFuture<int> IOUring::WriteAsync(int fileDescriptor, std::string_view data,
                                      size_t offset, size_t len) {
-  auto promise = std::make_shared<CoPromise<int>>();
-  auto future = promise->GetFuture();
-  Write(fileDescriptor, data, offset, len, [promise](int result) {
-    promise->Set(result);
-  });
-  return future;
+  return OwningCoFuture<int>(
+      [this, fileDescriptor, data, offset, len](OwningCoFuture<int> &future) {
+        Write(fileDescriptor, data, offset, len, [&future](int result) {
+          future.Set(result);
+        });
+      });
 }
 
 void IOUring::ProcessCalls() {

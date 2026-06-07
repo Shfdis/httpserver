@@ -247,7 +247,9 @@ Server::~Server() {
   }
 }
 
-CoFuture<void> Server::AcceptAndProcess(IOUring &ring) {
+NonOwningCoFuture<void>
+Server::AcceptAndProcess(IOUring &ring,
+                         std::vector<NonOwningCoFuture<void>> &connections) {
   while (!stopFlag_.load()) {
     int connectionFD = co_await ring.AcceptAsync(socketFD_);
 
@@ -258,20 +260,38 @@ CoFuture<void> Server::AcceptAndProcess(IOUring &ring) {
       continue;
     }
 
-    Process(ring, connectionFD);
+    connections.push_back(Process(ring, connectionFD));
   }
   co_return;
 }
 
 void Server::WorkerLoop(IOUring &ring) {
   try {
-    auto acceptCoro = AcceptAndProcess(ring);
+    std::vector<NonOwningCoFuture<void>> connections;
+    connections.reserve(1024);
+    auto acceptCoro = AcceptAndProcess(ring, connections);
+    size_t cleanupPolls = 0;
     
     while (!stopFlag_.load()) {
       ring.Poll();
+
+      if (++cleanupPolls >= 256) {
+        cleanupPolls = 0;
+        connections.erase(
+            std::remove_if(connections.begin(), connections.end(),
+                           [](NonOwningCoFuture<void> &connection) {
+                             if (!connection.isReady()) {
+                               return false;
+                             }
+                             connection.Get();
+                             return true;
+                           }),
+            connections.end());
+      }
       
       if (acceptCoro.isReady()) {
-        acceptCoro = AcceptAndProcess(ring);
+        acceptCoro.Get();
+        acceptCoro = AcceptAndProcess(ring, connections);
       }
     }
 
@@ -282,6 +302,11 @@ void Server::WorkerLoop(IOUring &ring) {
     if (acceptCoro.isReady()) {
       acceptCoro.Get();
     }
+    for (NonOwningCoFuture<void> &connection : connections) {
+      if (connection.isReady()) {
+        connection.Get();
+      }
+    }
   } catch (const std::exception &e) {
     std::cerr << "[WorkerLoop] Exception: " << e.what() << std::endl;
   } catch (...) {
@@ -289,8 +314,8 @@ void Server::WorkerLoop(IOUring &ring) {
   }
 }
 
-CoFuture<void> Server::WriteRaw(IOUring &ring, int connectionFD,
-                                std::string_view data) {
+NonOwningCoFuture<void> Server::WriteRaw(IOUring &ring, int connectionFD,
+                                         std::string_view data) {
   size_t sent = 0;
   int attempts = 0;
   while (sent < data.size()) {
@@ -312,10 +337,11 @@ CoFuture<void> Server::WriteRaw(IOUring &ring, int connectionFD,
   co_return;
 }
 
-CoFuture<void> Server::WriteResponse(IOUring &ring, int connectionFD,
-                                     const ResponseData &data,
-                                     const RequestData &request,
-                                     bool keepAlive, std::string &buffer) {
+NonOwningCoFuture<void> Server::WriteResponse(IOUring &ring, int connectionFD,
+                                              const ResponseData &data,
+                                              const RequestData &request,
+                                              bool keepAlive,
+                                              std::string &buffer) {
   const unsigned short status = NormalizeStatus(data.status);
   const bool sendBody = ShouldSendBody(status, request.method);
   buffer.clear();
@@ -360,7 +386,7 @@ CoFuture<void> Server::WriteResponse(IOUring &ring, int connectionFD,
   co_return;
 }
 
-CoFuture<void> Server::Process(IOUring &ring, int connectionFD) {
+NonOwningCoFuture<void> Server::Process(IOUring &ring, int connectionFD) {
   HttpRequestParser parser(ring, connectionFD);
   std::string writeBuffer;
   writeBuffer.reserve(256);

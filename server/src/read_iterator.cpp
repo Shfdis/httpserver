@@ -15,7 +15,7 @@ bool IsRetryableIoError(int result) {
 
 ReadIterator::ReadIterator(IOUring &ring, int fd) : ring_(ring), fd_(fd) {}
 
-CoFuture<void> ReadIterator::operator++() {
+NonOwningCoFuture<void> ReadIterator::operator++() {
   if (position_ < length_) {
     ++position_;
   }

@@ -1,5 +1,5 @@
 #pragma once
-#include "co_future.h"
+#include "owning_co_future.h"
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -48,12 +48,12 @@ public:
   IOUring();
   IOUring &operator=(IOUring &&rhs);
   void Read(int fileDescriptor, std::array<char, kReadBufferSize> &buffer, std::function<void(int)> complete);
-  CoFuture<int> ReadAsync(int fileDescriptor, std::array<char, kReadBufferSize> &buffer);
+  OwningCoFuture<int> ReadAsync(int fileDescriptor, std::array<char, kReadBufferSize> &buffer);
   void Write(int fileDescriptor, std::string_view data, size_t offset, size_t len,
              std::function<void(int)> complete);
-  CoFuture<int> WriteAsync(int fileDescriptor, std::string_view data, size_t offset,
+  OwningCoFuture<int> WriteAsync(int fileDescriptor, std::string_view data, size_t offset,
                               size_t len);
   void Accept(int fileDescriptor, std::function<void(int)> complete);
-  CoFuture<int> AcceptAsync(int fileDescriptor);
+  OwningCoFuture<int> AcceptAsync(int fileDescriptor);
 };
 }

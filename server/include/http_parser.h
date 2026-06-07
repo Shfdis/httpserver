@@ -1,5 +1,5 @@
 #pragma once
-#include "co_future.h"
+#include "non_owning_co_future.h"
 #include "read_iterator.h"
 #include "request_data.h"
 #include <optional>
@@ -81,7 +81,7 @@ class HttpRequestParser {
 
 public:
   HttpRequestParser(IOUring &ring, int fd);
-  CoFuture<RequestReadStatus> ReadRequest(RequestData &request);
+  NonOwningCoFuture<RequestReadStatus> ReadRequest(RequestData &request);
   void MarkContinueSent();
 };
 

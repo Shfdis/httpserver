@@ -1044,7 +1044,7 @@ HttpRequestParser::HttpRequestParser(IOUring &ring, int fd)
 
 void HttpRequestParser::MarkContinueSent() { state_.MarkContinueSent(); }
 
-CoFuture<RequestReadStatus> HttpRequestParser::ReadRequest(
+NonOwningCoFuture<RequestReadStatus> HttpRequestParser::ReadRequest(
     RequestData &request) {
   while (true) {
     HttpParseResult parsed = state_.ParseNext(request);
