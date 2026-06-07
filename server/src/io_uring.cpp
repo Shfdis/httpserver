@@ -35,7 +35,8 @@ void IOUring::AddEntries() {
         std::move(entry.complete), std::move(entry.writeData), entry.writeOffset, entry.writeLen};
     
     if (entry.type == IOUring::READ) [[likely]] {
-      io_uring_prep_read(sqEntry, entry.fd, entry.toRead.value(), 256, 0);
+      io_uring_prep_read(sqEntry, entry.fd, entry.toRead.value(),
+                         kReadBufferSize, 0);
     } else if (entry.type == IOUring::ACCEPT) {
       io_uring_prep_accept(sqEntry, entry.fd, nullptr, nullptr, 0);
     } else [[likely]] {
@@ -89,7 +90,8 @@ void IOUring::Write(int fileDescriptor, std::string_view data, size_t offset,
   AddEntries();
 }
 
-void IOUring::Read(int fileDescriptor, std::array<char, 256> &buffer,
+void IOUring::Read(int fileDescriptor,
+                   std::array<char, kReadBufferSize> &buffer,
                    std::function<void(int)> complete) {
   if (fileDescriptor < 0) {
     throw std::runtime_error("Invalid file descriptor");
@@ -102,7 +104,8 @@ void IOUring::Read(int fileDescriptor, std::array<char, 256> &buffer,
   queue_.push_back(entry);
 }
 
-CoFuture<int> IOUring::ReadAsync(int fileDescriptor, std::array<char, 256> &buffer) {
+CoFuture<int> IOUring::ReadAsync(
+    int fileDescriptor, std::array<char, kReadBufferSize> &buffer) {
   auto promise = std::make_shared<CoPromise<int>>();
   auto future = promise->GetFuture();
   Read(fileDescriptor, buffer, [promise](int result) {

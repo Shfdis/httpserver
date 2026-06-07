@@ -1,11 +1,13 @@
 #pragma once
 #include "co_future.h"
+#include "http_parser.h"
 #include "io_uring.h"
-#include "read_iterator.h"
 #include "request_data.h"
 #include "trie.h"
 #include <atomic>
 #include <memory>
+#include <string>
+#include <string_view>
 #include <vector>
 namespace HTTP {
 class Server {
@@ -20,9 +22,11 @@ private:
   
   void WorkerLoop(IOUring &ring);
   CoFuture<void> AcceptAndProcess(IOUring &ring);
-  CoFuture<void> GetHandler(RequestData &data, ReadIterator &iter, RespondType &handler);
-  CoFuture<void> WriteResponse(IOUring &ring, int connectionFD, const ResponseData &data,
-                               bool keepAlive);
+  CoFuture<void> WriteRaw(IOUring &ring, int connectionFD, std::string_view data);
+  CoFuture<void> WriteResponse(IOUring &ring, int connectionFD,
+                               const ResponseData &data,
+                               const RequestData &request, bool keepAlive,
+                               std::string &buffer);
   CoFuture<void> Process(IOUring &ring, int connectionFD);
   friend class ServerBuilder;
 

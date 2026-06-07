@@ -23,17 +23,28 @@ class Trie {
                        StringEqual>
         children;
     std::unique_ptr<Node> wildcard;
-    std::optional<RespondType> handlers[5];
+    std::optional<RespondType> handlers[kRoutableMethodCount];
     Node() = default;
     Node &Move(std::string_view segment);
   };
   std::unique_ptr<Node> root_ = std::make_unique<Node>();
 
 public:
+  struct RouteResult {
+    bool pathFound{false};
+    bool methodAllowed{false};
+    bool automaticOptions{false};
+    RespondType handler;
+    std::string allow;
+  };
+
   Trie() = default;
   Trie(Trie &&rhs);
   Trie &operator=(Trie &&rhs);
   void AddRequest(Method type, RespondType function, std::string_view path);
+  std::string AllAllowedMethods() const;
+  RouteResult Resolve(Method method, std::string_view path,
+                      std::vector<std::string> &urlVariables) const;
   RespondType Match(Method method, std::string_view path,
                     std::vector<std::string> &urlVariables) const;
 };

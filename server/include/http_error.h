@@ -1,11 +1,11 @@
 #pragma once
 #include <exception>
-#include <string_view>
+#include <string>
 namespace HTTP {
 class HTTPError : public std::exception {
 public:
-  std::string_view message;
+  std::string message;
   const int status;
-  HTTPError(int status, std::string_view message);
+  HTTPError(int status, std::string message);
 };
 } // namespace HTTP

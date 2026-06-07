@@ -1,16 +1,17 @@
 #include "server.h"
 #include "http_error.h"
-#include "read_iterator.h"
 #include "request_data.h"
 #include "trie.h"
+#include <algorithm>
 #include <cerrno>
-#include <cctype>
+#include <charconv>
+#include <chrono>
 #include <csignal>
+#include <ctime>
 #include <iostream>
 #include <memory>
 #include <netinet/in.h>
 #include <optional>
-#include <sstream>
 #include <stdexcept>
 #include <system_error>
 #include <sys/socket.h>
@@ -20,55 +21,197 @@
 namespace HTTP {
 
 namespace {
-static bool iequals(std::string_view a, std::string_view b) {
-  if (a.size() != b.size())
+constexpr unsigned char ascii_lower(unsigned char ch) {
+  return ch >= 'A' && ch <= 'Z' ? static_cast<unsigned char>(ch + ('a' - 'A'))
+                                : ch;
+}
+
+bool iequals(std::string_view a, std::string_view b) {
+  if (a.size() != b.size()) {
     return false;
+  }
   for (size_t i = 0; i < a.size(); ++i) {
-    if (std::tolower(static_cast<unsigned char>(a[i])) !=
-        std::tolower(static_cast<unsigned char>(b[i]))) {
+    if (ascii_lower(static_cast<unsigned char>(a[i])) !=
+        ascii_lower(static_cast<unsigned char>(b[i]))) {
       return false;
     }
   }
   return true;
 }
 
-static std::string trim_copy(std::string_view s) {
-  size_t start = 0;
-  while (start < s.size() &&
-         std::isspace(static_cast<unsigned char>(s[start]))) {
-    ++start;
+bool ShouldKeepAlive(const RequestData &request) {
+  if (request.version == "HTTP/1.0") {
+    return request.connectionKeepAlive;
   }
-  size_t end = s.size();
-  while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1]))) {
-    --end;
-  }
-  return std::string(s.substr(start, end - start));
-}
-
-static std::optional<std::string_view>
-find_header_ci(const std::unordered_map<std::string, std::string> &headers,
-               std::string_view key) {
-  for (const auto &[k, v] : headers) {
-    if (iequals(k, key))
-      return v;
-  }
-  return std::nullopt;
-}
-
-static bool wants_close(const RequestData &request) {
-  auto v = find_header_ci(request.headers, "Connection");
-  if (!v)
+  if (request.connectionClose) {
     return false;
-  std::string value = trim_copy(*v);
-  for (auto &ch : value)
-    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-  return value.find("close") != std::string::npos;
+  }
+  return request.version == "HTTP/1.1";
+}
+
+bool ascii_is_alpha(unsigned char ch) {
+  return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+}
+
+bool ascii_is_digit(unsigned char ch) { return ch >= '0' && ch <= '9'; }
+
+bool ascii_is_alnum(unsigned char ch) {
+  return ascii_is_alpha(ch) || ascii_is_digit(ch);
+}
+
+bool is_tchar(unsigned char ch) {
+  if (ascii_is_alnum(ch)) {
+    return true;
+  }
+  switch (ch) {
+  case '!':
+  case '#':
+  case '$':
+  case '%':
+  case '&':
+  case '\'':
+  case '*':
+  case '+':
+  case '-':
+  case '.':
+  case '^':
+  case '_':
+  case '`':
+  case '{':
+  case '|':
+  case '}':
+  case '~':
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool valid_header_name(std::string_view name) {
+  if (name.empty()) {
+    return false;
+  }
+  return std::all_of(name.begin(), name.end(), [](char ch) {
+    return is_tchar(static_cast<unsigned char>(ch));
+  });
+}
+
+bool valid_header_value(std::string_view value) {
+  for (unsigned char ch : value) {
+    if (ch == '\t') {
+      continue;
+    }
+    if (ch < 0x20 || ch == 0x7f) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool reserved_response_header(std::string_view name) {
+  return iequals(name, "Content-Length") ||
+         iequals(name, "Transfer-Encoding") || iequals(name, "Connection") ||
+         iequals(name, "Date");
+}
+
+unsigned short NormalizeStatus(unsigned short status) {
+  if (status < 100 || status > 599) {
+    return 500;
+  }
+  return status;
+}
+
+std::string_view ReasonPhrase(unsigned short status) {
+  switch (status) {
+  case 100:
+    return "Continue";
+  case 101:
+    return "Switching Protocols";
+  case 200:
+    return "OK";
+  case 201:
+    return "Created";
+  case 202:
+    return "Accepted";
+  case 204:
+    return "No Content";
+  case 301:
+    return "Moved Permanently";
+  case 302:
+    return "Found";
+  case 304:
+    return "Not Modified";
+  case 400:
+    return "Bad Request";
+  case 404:
+    return "Not Found";
+  case 405:
+    return "Method Not Allowed";
+  case 413:
+    return "Content Too Large";
+  case 414:
+    return "URI Too Long";
+  case 417:
+    return "Expectation Failed";
+  case 431:
+    return "Request Header Fields Too Large";
+  case 500:
+    return "Internal Server Error";
+  case 501:
+    return "Not Implemented";
+  case 505:
+    return "HTTP Version Not Supported";
+  default:
+    if (status < 200) {
+      return "Informational";
+    }
+    if (status < 300) {
+      return "Successful";
+    }
+    if (status < 400) {
+      return "Redirection";
+    }
+    if (status < 500) {
+      return "Client Error";
+    }
+    return "Server Error";
+  }
+}
+
+std::string_view HttpDate() {
+  thread_local std::time_t cachedSecond = 0;
+  thread_local char buffer[64] = "Thu, 01 Jan 1970 00:00:00 GMT";
+
+  const std::time_t now = std::time(nullptr);
+  if (now != cachedSecond) {
+    cachedSecond = now;
+    std::tm tm{};
+    gmtime_r(&now, &tm);
+    std::strftime(buffer, sizeof(buffer), "%a, %d %b %Y %H:%M:%S GMT", &tm);
+  }
+  return buffer;
+}
+
+bool StatusAllowsBody(unsigned short status) {
+  return status >= 200 && status != 204 && status != 304;
+}
+
+bool ShouldSendBody(unsigned short status, Method method) {
+  return method != HEAD && StatusAllowsBody(status);
 }
 
 constexpr int kMaxIoAttempts = 3;
 
 bool IsRetryableIoError(int result) {
   return result == -EINTR || result == -EAGAIN || result == -EWOULDBLOCK;
+}
+
+void AppendUnsigned(std::string &out, size_t value) {
+  char buffer[32];
+  auto [ptr, ec] = std::to_chars(buffer, buffer + sizeof(buffer), value);
+  if (ec == std::errc()) {
+    out.append(buffer, ptr);
+  }
 }
 } // namespace
 
@@ -91,7 +234,16 @@ Server::~Server() {
     socketFD_ = -1;
   }
   for (auto &future : workerFutures_) {
-    future.Get();
+    try {
+      if (future.valid()) {
+        future.Get();
+      }
+    } catch (const std::exception &error) {
+      std::cerr << "[Server] Worker shutdown failed: " << error.what()
+                << std::endl;
+    } catch (...) {
+      std::cerr << "[Server] Worker shutdown failed" << std::endl;
+    }
   }
 }
 
@@ -122,6 +274,14 @@ void Server::WorkerLoop(IOUring &ring) {
         acceptCoro = AcceptAndProcess(ring);
       }
     }
+
+    for (int attempts = 0; !acceptCoro.isReady() && attempts < 1000;
+         ++attempts) {
+      ring.Poll();
+    }
+    if (acceptCoro.isReady()) {
+      acceptCoro.Get();
+    }
   } catch (const std::exception &e) {
     std::cerr << "[WorkerLoop] Exception: " << e.what() << std::endl;
   } catch (...) {
@@ -129,27 +289,13 @@ void Server::WorkerLoop(IOUring &ring) {
   }
 }
 
-CoFuture<void> Server::WriteResponse(IOUring &ring, int connectionFD, const ResponseData &data,
-                                     bool keepAlive) {
-  std::stringstream text;
-  text << "HTTP/1.1 " << data.status << ' '
-       << (data.status / 100 == 2 ? "OK" : "ERROR") << "\r\n";
-  auto headers = data.headers;
-  if (!headers.contains("Content-Length")) {
-    headers["Content-Length"] = std::to_string(data.body.size());
-  }
-  headers["Connection"] = keepAlive ? "keep-alive" : "close";
-  for (const auto &[name, value] : headers) {
-    text << name << ": " << value << "\r\n";
-  }
-  text << "\r\n";
-  text << data.body;
-  std::string final = text.str();
+CoFuture<void> Server::WriteRaw(IOUring &ring, int connectionFD,
+                                std::string_view data) {
   size_t sent = 0;
   int attempts = 0;
-  while (sent < final.size()) {
-    int result = co_await ring.WriteAsync(connectionFD, final, sent,
-                                          final.size() - sent);
+  while (sent < data.size()) {
+    int result =
+        co_await ring.WriteAsync(connectionFD, data, sent, data.size() - sent);
     if (result > 0) {
       sent += static_cast<size_t>(result);
       attempts = 0;
@@ -166,50 +312,105 @@ CoFuture<void> Server::WriteResponse(IOUring &ring, int connectionFD, const Resp
   co_return;
 }
 
+CoFuture<void> Server::WriteResponse(IOUring &ring, int connectionFD,
+                                     const ResponseData &data,
+                                     const RequestData &request,
+                                     bool keepAlive, std::string &buffer) {
+  const unsigned short status = NormalizeStatus(data.status);
+  const bool sendBody = ShouldSendBody(status, request.method);
+  buffer.clear();
+  buffer.reserve(160 + data.body.size());
+
+  buffer += "HTTP/1.1 ";
+  AppendUnsigned(buffer, status);
+  buffer += ' ';
+  buffer += ReasonPhrase(status);
+  buffer += "\r\nDate: ";
+  buffer += HttpDate();
+  buffer += "\r\n";
+
+  if (StatusAllowsBody(status)) {
+    buffer += "Content-Length: ";
+    AppendUnsigned(buffer, data.body.size());
+    buffer += "\r\n";
+  }
+
+  if (!keepAlive) {
+    buffer += "Connection: close\r\n";
+  } else if (request.version == "HTTP/1.0") {
+    buffer += "Connection: keep-alive\r\n";
+  }
+
+  for (const auto &[name, value] : data.headers) {
+    if (reserved_response_header(name) || !valid_header_name(name) ||
+        !valid_header_value(value)) {
+      continue;
+    }
+    buffer += name;
+    buffer += ": ";
+    buffer += value;
+    buffer += "\r\n";
+  }
+  buffer += "\r\n";
+  if (sendBody) {
+    buffer += data.body;
+  }
+
+  co_await WriteRaw(ring, connectionFD, buffer);
+  co_return;
+}
+
 CoFuture<void> Server::Process(IOUring &ring, int connectionFD) {
-  ReadIterator iterator(ring, connectionFD);
+  HttpRequestParser parser(ring, connectionFD);
+  std::string writeBuffer;
+  writeBuffer.reserve(256);
 
   while (true) {
+    RequestData request;
     ResponseData response;
     bool keepAlive = true;
     bool mustClose = false;
 
     try {
-      RequestData request;
-      co_await iterator.Ensure();
-      if (!iterator) {
-        mustClose = true;
-        keepAlive = false;
-        throw HTTPError(400, "");
-      }
-      co_await iterator.ParseMethod(request);
-      RespondType handler;
-      co_await GetHandler(request, iterator, handler);
-      co_await iterator.ParseVariables(request);
-      co_await ++iterator;
-      std::string protocol;
       while (true) {
-        co_await iterator.Ensure();
-        if (!iterator) {
-          throw HTTPError(400, "Invalid request");
+        RequestReadStatus readStatus = co_await parser.ReadRequest(request);
+        if (readStatus == RequestReadStatus::Closed) {
+          (void)shutdown(connectionFD, SHUT_WR);
+          close(connectionFD);
+          co_return;
         }
-        char c = *iterator;
-        if (c == '\n') {
+        if (readStatus == RequestReadStatus::Complete) {
           break;
         }
-        if (c != '\r') {
-          protocol += c;
+        co_await WriteRaw(ring, connectionFD,
+                          "HTTP/1.1 100 Continue\r\n\r\n");
+        parser.MarkContinueSent();
+      }
+
+      keepAlive = ShouldKeepAlive(request);
+      if (request.method == UNKNOWN) {
+        response.status = 501;
+        response.body = "Not Implemented";
+      } else if (request.method == OPTIONS && request.path == "*") {
+        response.status = 200;
+        response.headers["Allow"] = trie_.AllAllowedMethods();
+      } else {
+        Trie::RouteResult route =
+            trie_.Resolve(request.method, request.path, request.urlVariables);
+        if (!route.pathFound) {
+          response.status = 404;
+          response.body = "Not Found";
+        } else if (request.method == OPTIONS && route.automaticOptions) {
+          response.status = 200;
+          response.headers["Allow"] = route.allow;
+        } else if (!route.methodAllowed) {
+          response.status = 405;
+          response.body = "Method Not Allowed";
+          response.headers["Allow"] = route.allow;
+        } else {
+          response = route.handler(request);
         }
-        co_await ++iterator;
       }
-      if (protocol != "HTTP/1.1") {
-        throw HTTPError(400, "Invalid request");
-      }
-      co_await ++iterator;
-      co_await iterator.ParseHeaders(request);
-      co_await iterator.ParseBody(request);
-      keepAlive = !wants_close(request);
-      response = handler(request);
     } catch (HTTPError &error) {
       response.status = error.status;
       response.body = error.message;
@@ -234,7 +435,8 @@ CoFuture<void> Server::Process(IOUring &ring, int connectionFD) {
 
     if (!mustClose || response.status != 400 || !response.body.empty()) {
       try {
-        co_await WriteResponse(ring, connectionFD, response, keepAlive);
+        co_await WriteResponse(ring, connectionFD, response, request, keepAlive,
+                               writeBuffer);
       } catch (const std::system_error &) {
         mustClose = true;
         keepAlive = false;
@@ -246,34 +448,6 @@ CoFuture<void> Server::Process(IOUring &ring, int connectionFD) {
       break;
     }
   }
-  co_return;
-}
-
-CoFuture<void> Server::GetHandler(RequestData &data, ReadIterator &iter, RespondType &handler) {
-  co_await iter.Ensure();
-  if (*iter != ' ') {
-    throw HTTPError(400, "Invalid request");
-  }
-  co_await ++iter;
-  co_await iter.Ensure();
-  if (*iter != '/') {
-    throw HTTPError(400, "Invalid request");
-  }
-  std::string path;
-  path.reserve(64);
-  while (true) {
-    co_await iter.Ensure();
-    if (!iter) {
-      throw HTTPError(400, "Invalid request");
-    }
-    char c = *iter;
-    if (c == ' ' || c == '?') {
-      break;
-    }
-    path.push_back(c);
-    co_await ++iter;
-  }
-  handler = trie_.Match(data.method, path, data.urlVariables);
   co_return;
 }
 
