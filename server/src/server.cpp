@@ -234,7 +234,16 @@ Server::~Server() {
     socketFD_ = -1;
   }
   for (auto &future : workerFutures_) {
-    future.Get();
+    try {
+      if (future.valid()) {
+        future.Get();
+      }
+    } catch (const std::exception &error) {
+      std::cerr << "[Server] Worker shutdown failed: " << error.what()
+                << std::endl;
+    } catch (...) {
+      std::cerr << "[Server] Worker shutdown failed" << std::endl;
+    }
   }
 }
 
@@ -264,6 +273,14 @@ void Server::WorkerLoop(IOUring &ring) {
       if (acceptCoro.isReady()) {
         acceptCoro = AcceptAndProcess(ring);
       }
+    }
+
+    for (int attempts = 0; !acceptCoro.isReady() && attempts < 1000;
+         ++attempts) {
+      ring.Poll();
+    }
+    if (acceptCoro.isReady()) {
+      acceptCoro.Get();
     }
   } catch (const std::exception &e) {
     std::cerr << "[WorkerLoop] Exception: " << e.what() << std::endl;
