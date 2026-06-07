@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - master
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: build-and-test
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm base-devel cmake gcc liburing pkgconf git nodejs
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Configure server tests
+        run: cmake -S server -B build/server -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build server tests
+        run: cmake --build build/server -j
+
+      - name: Run tests
+        run: ctest --test-dir build/server --output-on-failure
+
+      - name: Configure example
+        run: cmake -S example -B build/example -DCMAKE_BUILD_TYPE=Release -DENABLE_ASAN=OFF
+
+      - name: Build example
+        run: cmake --build build/example -j

@@ -71,11 +71,29 @@ cd ../benchmarks
 DURATION=30s THREADS=4 CONNECTIONS=100 ./benchmark.sh
 ```
 
-Output (2026-04-02 16:42:45 MSK, non-ASAN Release build):
+Output (non-ASAN Release build):
 
-- **GET /echo**
-  - **C++**: 427149 req/s
-  - **Tokio**: 500231 req/s
-- **POST /echo**
-  - **C++**: 387572 req/s
-  - **Tokio**: 452589 req/s
+#### GET /echo
+
+| Server | Latency avg | Latency stdev | Latency max | +/- stdev | Requests/sec | Transfer/sec |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| C++ coroutine server | 132.16us | 66.78us | 4.97ms | 80.82% | 439792.17 | 29.78MB |
+| Rust Tokio server | 150.12us | 119.34us | 5.53ms | 94.01% | 506996.06 | 40.61MB |
+
+#### POST /echo
+
+| Server | Latency avg | Latency stdev | Latency max | +/- stdev | Requests/sec | Transfer/sec |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| C++ coroutine server | 149.98us | 77.14us | 5.27ms | 81.01% | 402624.34 | 29.57MB |
+| Rust Tokio server | 168.98us | 138.11us | 5.80ms | 91.79% | 465844.80 | 39.98MB |
+
+## Pull Request Checks
+
+Pull requests targeting `main` or `master` run the `CI / build-and-test`
+GitHub Actions check. Configure both branches in GitHub branch protection or a
+repository ruleset with:
+
+- Require a pull request before merging
+- Require status checks to pass before merging
+- Required status check: `build-and-test` (shown in Actions as `CI / build-and-test`)
+- Restrict direct pushes to matching branches
