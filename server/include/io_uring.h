@@ -2,6 +2,7 @@
 #include "co_future.h"
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <deque>
 #include <functional>
 #include <liburing.h>
@@ -12,6 +13,8 @@
 #include <string_view>
 #define QUEUE_DEPTH 1024
 namespace HTTP {
+inline constexpr size_t kReadBufferSize = 256;
+
 class IOUring;
 
 class IOUring {
@@ -44,8 +47,8 @@ public:
   ~IOUring();
   IOUring();
   IOUring &operator=(IOUring &&rhs);
-  void Read(int fileDescriptor, std::array<char, 256> &buffer, std::function<void(int)> complete);
-  CoFuture<int> ReadAsync(int fileDescriptor, std::array<char, 256> &buffer);
+  void Read(int fileDescriptor, std::array<char, kReadBufferSize> &buffer, std::function<void(int)> complete);
+  CoFuture<int> ReadAsync(int fileDescriptor, std::array<char, kReadBufferSize> &buffer);
   void Write(int fileDescriptor, std::string_view data, size_t offset, size_t len,
              std::function<void(int)> complete);
   CoFuture<int> WriteAsync(int fileDescriptor, std::string_view data, size_t offset,

@@ -4,7 +4,7 @@
 #include "trie.h"
 #include <algorithm>
 #include <cerrno>
-#include <cctype>
+#include <charconv>
 #include <chrono>
 #include <csignal>
 #include <ctime>
@@ -12,7 +12,6 @@
 #include <memory>
 #include <netinet/in.h>
 #include <optional>
-#include <sstream>
 #include <stdexcept>
 #include <system_error>
 #include <sys/socket.h>
@@ -22,60 +21,46 @@
 namespace HTTP {
 
 namespace {
+constexpr unsigned char ascii_lower(unsigned char ch) {
+  return ch >= 'A' && ch <= 'Z' ? static_cast<unsigned char>(ch + ('a' - 'A'))
+                                : ch;
+}
+
 bool iequals(std::string_view a, std::string_view b) {
   if (a.size() != b.size()) {
     return false;
   }
   for (size_t i = 0; i < a.size(); ++i) {
-    if (std::tolower(static_cast<unsigned char>(a[i])) !=
-        std::tolower(static_cast<unsigned char>(b[i]))) {
+    if (ascii_lower(static_cast<unsigned char>(a[i])) !=
+        ascii_lower(static_cast<unsigned char>(b[i]))) {
       return false;
     }
   }
   return true;
 }
 
-std::string trim_ows(std::string_view s) {
-  size_t start = 0;
-  while (start < s.size() && (s[start] == ' ' || s[start] == '\t')) {
-    ++start;
-  }
-  size_t end = s.size();
-  while (end > start && (s[end - 1] == ' ' || s[end - 1] == '\t')) {
-    --end;
-  }
-  return std::string(s.substr(start, end - start));
-}
-
-bool has_token(std::string_view value, std::string_view token) {
-  size_t pos = 0;
-  while (pos <= value.size()) {
-    const size_t comma = value.find(',', pos);
-    const size_t end = comma == std::string_view::npos ? value.size() : comma;
-    if (iequals(trim_ows(value.substr(pos, end - pos)), token)) {
-      return true;
-    }
-    if (comma == std::string_view::npos) {
-      break;
-    }
-    pos = comma + 1;
-  }
-  return false;
-}
-
 bool ShouldKeepAlive(const RequestData &request) {
-  const auto connection = request.Header("Connection");
   if (request.version == "HTTP/1.0") {
-    return connection && has_token(*connection, "keep-alive");
+    return request.connectionKeepAlive;
   }
-  if (connection && has_token(*connection, "close")) {
+  if (request.connectionClose) {
     return false;
   }
   return request.version == "HTTP/1.1";
 }
 
+bool ascii_is_alpha(unsigned char ch) {
+  return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+}
+
+bool ascii_is_digit(unsigned char ch) { return ch >= '0' && ch <= '9'; }
+
+bool ascii_is_alnum(unsigned char ch) {
+  return ascii_is_alpha(ch) || ascii_is_digit(ch);
+}
+
 bool is_tchar(unsigned char ch) {
-  if (std::isalnum(ch)) {
+  if (ascii_is_alnum(ch)) {
     return true;
   }
   switch (ch) {
@@ -193,13 +178,17 @@ std::string_view ReasonPhrase(unsigned short status) {
   }
 }
 
-std::string HttpDate() {
-  std::time_t now =
-      std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-  std::tm tm{};
-  gmtime_r(&now, &tm);
-  char buffer[64]{};
-  std::strftime(buffer, sizeof(buffer), "%a, %d %b %Y %H:%M:%S GMT", &tm);
+std::string_view HttpDate() {
+  thread_local std::time_t cachedSecond = 0;
+  thread_local char buffer[64] = "Thu, 01 Jan 1970 00:00:00 GMT";
+
+  const std::time_t now = std::time(nullptr);
+  if (now != cachedSecond) {
+    cachedSecond = now;
+    std::tm tm{};
+    gmtime_r(&now, &tm);
+    std::strftime(buffer, sizeof(buffer), "%a, %d %b %Y %H:%M:%S GMT", &tm);
+  }
   return buffer;
 }
 
@@ -215,6 +204,14 @@ constexpr int kMaxIoAttempts = 3;
 
 bool IsRetryableIoError(int result) {
   return result == -EINTR || result == -EAGAIN || result == -EWOULDBLOCK;
+}
+
+void AppendUnsigned(std::string &out, size_t value) {
+  char buffer[32];
+  auto [ptr, ec] = std::to_chars(buffer, buffer + sizeof(buffer), value);
+  if (ec == std::errc()) {
+    out.append(buffer, ptr);
+  }
 }
 } // namespace
 
@@ -301,20 +298,30 @@ CoFuture<void> Server::WriteRaw(IOUring &ring, int connectionFD,
 CoFuture<void> Server::WriteResponse(IOUring &ring, int connectionFD,
                                      const ResponseData &data,
                                      const RequestData &request,
-                                     bool keepAlive) {
+                                     bool keepAlive, std::string &buffer) {
   const unsigned short status = NormalizeStatus(data.status);
-  std::stringstream text;
-  text << "HTTP/1.1 " << status << ' ' << ReasonPhrase(status) << "\r\n";
-  text << "Date: " << HttpDate() << "\r\n";
+  const bool sendBody = ShouldSendBody(status, request.method);
+  buffer.clear();
+  buffer.reserve(160 + data.body.size());
+
+  buffer += "HTTP/1.1 ";
+  AppendUnsigned(buffer, status);
+  buffer += ' ';
+  buffer += ReasonPhrase(status);
+  buffer += "\r\nDate: ";
+  buffer += HttpDate();
+  buffer += "\r\n";
 
   if (StatusAllowsBody(status)) {
-    text << "Content-Length: " << data.body.size() << "\r\n";
+    buffer += "Content-Length: ";
+    AppendUnsigned(buffer, data.body.size());
+    buffer += "\r\n";
   }
 
   if (!keepAlive) {
-    text << "Connection: close\r\n";
+    buffer += "Connection: close\r\n";
   } else if (request.version == "HTTP/1.0") {
-    text << "Connection: keep-alive\r\n";
+    buffer += "Connection: keep-alive\r\n";
   }
 
   for (const auto &[name, value] : data.headers) {
@@ -322,20 +329,24 @@ CoFuture<void> Server::WriteResponse(IOUring &ring, int connectionFD,
         !valid_header_value(value)) {
       continue;
     }
-    text << name << ": " << value << "\r\n";
+    buffer += name;
+    buffer += ": ";
+    buffer += value;
+    buffer += "\r\n";
   }
-  text << "\r\n";
-  if (ShouldSendBody(status, request.method)) {
-    text << data.body;
+  buffer += "\r\n";
+  if (sendBody) {
+    buffer += data.body;
   }
 
-  std::string final = text.str();
-  co_await WriteRaw(ring, connectionFD, final);
+  co_await WriteRaw(ring, connectionFD, buffer);
   co_return;
 }
 
 CoFuture<void> Server::Process(IOUring &ring, int connectionFD) {
   HttpRequestParser parser(ring, connectionFD);
+  std::string writeBuffer;
+  writeBuffer.reserve(256);
 
   while (true) {
     RequestData request;
@@ -407,7 +418,8 @@ CoFuture<void> Server::Process(IOUring &ring, int connectionFD) {
 
     if (!mustClose || response.status != 400 || !response.body.empty()) {
       try {
-        co_await WriteResponse(ring, connectionFD, response, request, keepAlive);
+        co_await WriteResponse(ring, connectionFD, response, request, keepAlive,
+                               writeBuffer);
       } catch (const std::system_error &) {
         mustClose = true;
         keepAlive = false;

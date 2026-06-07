@@ -6,6 +6,7 @@
 #include "trie.h"
 #include <atomic>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <vector>
 namespace HTTP {
@@ -24,7 +25,8 @@ private:
   CoFuture<void> WriteRaw(IOUring &ring, int connectionFD, std::string_view data);
   CoFuture<void> WriteResponse(IOUring &ring, int connectionFD,
                                const ResponseData &data,
-                               const RequestData &request, bool keepAlive);
+                               const RequestData &request, bool keepAlive,
+                               std::string &buffer);
   CoFuture<void> Process(IOUring &ring, int connectionFD);
   friend class ServerBuilder;
 

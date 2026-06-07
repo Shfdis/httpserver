@@ -24,6 +24,8 @@ struct RequestData {
   std::string query;
   std::string version;
   std::string body;
+  bool connectionClose{false};
+  bool connectionKeepAlive{false};
 
   std::optional<std::string> Header(std::string_view name) const;
 };

@@ -5,7 +5,7 @@ namespace HTTP {
 
 class ReadIterator {
   IOUring &ring_;
-  std::array<char, 256> buffer_;
+  std::array<char, kReadBufferSize> buffer_;
   size_t length_{0};
   size_t position_{0};
   int fd_;

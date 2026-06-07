@@ -2,7 +2,7 @@
 #include "http_error.h"
 #include <algorithm>
 #include <charconv>
-#include <cctype>
+#include <cstring>
 #include <optional>
 #include <string_view>
 
@@ -29,28 +29,30 @@ HttpParseResult Error(int status, std::string message) {
   return {HttpParseStatus::Error, status, std::move(message)};
 }
 
+constexpr unsigned char ascii_lower(unsigned char ch) {
+  return ch >= 'A' && ch <= 'Z' ? static_cast<unsigned char>(ch + ('a' - 'A'))
+                                : ch;
+}
+
 bool iequals(std::string_view lhs, std::string_view rhs) {
   if (lhs.size() != rhs.size()) {
     return false;
   }
   for (size_t i = 0; i < lhs.size(); ++i) {
-    if (std::tolower(static_cast<unsigned char>(lhs[i])) !=
-        std::tolower(static_cast<unsigned char>(rhs[i]))) {
+    if (ascii_lower(static_cast<unsigned char>(lhs[i])) !=
+        ascii_lower(static_cast<unsigned char>(rhs[i]))) {
       return false;
     }
   }
   return true;
 }
 
-std::string lower_copy(std::string_view value) {
-  std::string result(value);
-  for (char &ch : result) {
-    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-  }
-  return result;
+bool starts_with_ci(std::string_view value, std::string_view prefix) {
+  return value.size() >= prefix.size() &&
+         iequals(value.substr(0, prefix.size()), prefix);
 }
 
-std::string trim_ows(std::string_view value) {
+std::string_view trim_ows_view(std::string_view value) {
   size_t start = 0;
   while (start < value.size() &&
          (value[start] == ' ' || value[start] == '\t')) {
@@ -60,11 +62,30 @@ std::string trim_ows(std::string_view value) {
   while (end > start && (value[end - 1] == ' ' || value[end - 1] == '\t')) {
     --end;
   }
-  return std::string(value.substr(start, end - start));
+  return value.substr(start, end - start);
+}
+
+std::string trim_ows(std::string_view value) {
+  return std::string(trim_ows_view(value));
+}
+
+bool ascii_is_alpha(unsigned char ch) {
+  return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+}
+
+bool ascii_is_digit(unsigned char ch) { return ch >= '0' && ch <= '9'; }
+
+bool ascii_is_alnum(unsigned char ch) {
+  return ascii_is_alpha(ch) || ascii_is_digit(ch);
+}
+
+bool ascii_is_xdigit(unsigned char ch) {
+  return ascii_is_digit(ch) || (ch >= 'a' && ch <= 'f') ||
+         (ch >= 'A' && ch <= 'F');
 }
 
 bool is_tchar(unsigned char ch) {
-  if (std::isalnum(ch)) {
+  if (ascii_is_alnum(ch)) {
     return true;
   }
   switch (ch) {
@@ -139,9 +160,9 @@ Method method_from_token(std::string_view token) {
 
 bool parse_http_version(std::string_view version, int &major, int &minor) {
   if (version.size() != 8 || version.substr(0, 5) != "HTTP/" ||
-      !std::isdigit(static_cast<unsigned char>(version[5])) ||
+      !ascii_is_digit(static_cast<unsigned char>(version[5])) ||
       version[6] != '.' ||
-      !std::isdigit(static_cast<unsigned char>(version[7]))) {
+      !ascii_is_digit(static_cast<unsigned char>(version[7]))) {
     return false;
   }
   major = version[5] - '0';
@@ -182,7 +203,7 @@ std::vector<std::string> split_comma_values(
 std::optional<size_t> parse_decimal_size(std::string_view value) {
   if (value.empty() ||
       !std::all_of(value.begin(), value.end(), [](char ch) {
-        return std::isdigit(static_cast<unsigned char>(ch));
+        return ascii_is_digit(static_cast<unsigned char>(ch));
       })) {
     return std::nullopt;
   }
@@ -199,7 +220,7 @@ std::optional<size_t> parse_decimal_size(std::string_view value) {
 std::optional<size_t> parse_hex_size(std::string_view value) {
   if (value.empty() ||
       !std::all_of(value.begin(), value.end(), [](char ch) {
-        return std::isxdigit(static_cast<unsigned char>(ch));
+        return ascii_is_xdigit(static_cast<unsigned char>(ch));
       })) {
     return std::nullopt;
   }
@@ -213,8 +234,8 @@ std::optional<size_t> parse_hex_size(std::string_view value) {
   return parsed;
 }
 
-HttpParseResult parse_field_line(std::string_view line, std::string &name,
-                                 std::string &value) {
+HttpParseResult parse_field_line(std::string_view line, std::string_view &name,
+                                 std::string_view &value) {
   if (line.empty()) {
     return Error(400, "Empty header field");
   }
@@ -225,39 +246,46 @@ HttpParseResult parse_field_line(std::string_view line, std::string &name,
   if (colon == std::string_view::npos) {
     return Error(400, "Invalid header field");
   }
-  name = std::string(line.substr(0, colon));
+  name = line.substr(0, colon);
   if (!is_token(name)) {
     return Error(400, "Invalid header name");
   }
-  value = trim_ows(line.substr(colon + 1));
+  value = trim_ows_view(line.substr(colon + 1));
   if (!valid_field_value(value)) {
     return Error(400, "Invalid header value");
   }
   return Complete();
 }
 
-void add_header(RequestData &request, std::string name, std::string value) {
-  request.rawHeaders.emplace_back(name, value);
-  auto existing = request.headers.find(name);
+void add_header(RequestData &request, std::string_view name,
+                std::string_view value) {
+  std::string storedName(name);
+  std::string storedValue(value);
+  request.rawHeaders.emplace_back(storedName, storedValue);
+  auto existing = request.headers.find(storedName);
   if (existing == request.headers.end()) {
-    request.headers.emplace(std::move(name), std::move(value));
+    request.headers.emplace(std::move(storedName), std::move(storedValue));
   } else {
     existing->second += ", ";
-    existing->second += value;
+    existing->second += storedValue;
   }
 }
 
-void add_trailer(RequestData &request, std::string name, std::string value) {
-  auto existing = request.trailers.find(name);
+void add_trailer(RequestData &request, std::string_view name,
+                 std::string_view value) {
+  std::string storedName(name);
+  std::string storedValue(value);
+  auto existing = request.trailers.find(storedName);
   if (existing == request.trailers.end()) {
-    request.trailers.emplace(std::move(name), std::move(value));
+    request.trailers.emplace(std::move(storedName), std::move(storedValue));
   } else {
     existing->second += ", ";
-    existing->second += value;
+    existing->second += storedValue;
   }
 }
 
 void parse_query_params(RequestData &request) {
+  request.params.reserve(4);
   size_t pos = 0;
   while (pos <= request.query.size()) {
     const size_t amp = request.query.find('&', pos);
@@ -266,14 +294,17 @@ void parse_query_params(RequestData &request) {
         std::string_view(request.query).substr(pos, end - pos);
     if (!part.empty()) {
       const size_t eq = part.find('=');
-      const std::string name =
-          eq == std::string_view::npos ? std::string(part)
-                                       : std::string(part.substr(0, eq));
-      const std::string value =
-          eq == std::string_view::npos ? std::string()
-                                       : std::string(part.substr(eq + 1));
+      const std::string_view name =
+          eq == std::string_view::npos ? part : part.substr(0, eq);
+      const std::string_view value =
+          eq == std::string_view::npos ? std::string_view()
+                                       : part.substr(eq + 1);
       if (!name.empty()) {
-        request.params[name] = value;
+        auto [it, inserted] =
+            request.params.emplace(std::string(name), std::string(value));
+        if (!inserted) {
+          it->second.assign(value);
+        }
       }
     }
     if (amp == std::string::npos) {
@@ -293,8 +324,8 @@ HttpParseResult parse_target(RequestData &request) {
     return Complete();
   }
 
-  const std::string lowerTarget = lower_copy(request.target);
-  if (lowerTarget.starts_with("http://") || lowerTarget.starts_with("https://")) {
+  if (starts_with_ci(request.target, "http://") ||
+      starts_with_ci(request.target, "https://")) {
     const size_t authorityStart = request.target.find("://") + 3;
     const size_t targetStart = request.target.find_first_of("/?", authorityStart);
     if (targetStart == authorityStart) {
@@ -470,9 +501,18 @@ std::optional<std::string> RequestData::Header(std::string_view name) const {
   return std::nullopt;
 }
 
+HttpParserState::HttpParserState() {
+  line_.reserve(256);
+  pending_.reserve(256);
+  current_.headers.reserve(8);
+  current_.rawHeaders.reserve(8);
+}
+
 void HttpParserState::ResetForNext() {
   state_ = State::StartLine;
   current_ = RequestData{};
+  current_.headers.reserve(8);
+  current_.rawHeaders.reserve(8);
   line_.clear();
   sawCr_ = false;
   continueSent_ = false;
@@ -482,9 +522,17 @@ void HttpParserState::ResetForNext() {
   started_ = false;
   chunked_ = false;
   expectsContinue_ = false;
+  hostEmpty_ = false;
+  contentLengthInvalid_ = false;
+  contentLengthConflict_ = false;
+  unsupportedTransferEncoding_ = false;
+  invalidExpect_ = false;
+  hasContentLength_ = false;
+  hostCount_ = 0;
   headerBytes_ = 0;
   fixedRemaining_ = 0;
   chunkRemaining_ = 0;
+  contentLength_ = 0;
   errorStatus_ = 0;
   errorMessage_.clear();
 }
@@ -496,8 +544,96 @@ void HttpParserState::SetError(int status, std::string message) {
 }
 
 void HttpParserState::CompleteCurrent() {
-  complete_ = std::move(current_);
   state_ = State::Complete;
+}
+
+void HttpParserState::TrackHeader(std::string_view name,
+                                  std::string_view value) {
+  if (iequals(name, "Host")) {
+    ++hostCount_;
+    hostEmpty_ = hostEmpty_ || value.empty();
+    return;
+  }
+
+  if (iequals(name, "Content-Length")) {
+    size_t pos = 0;
+    while (pos <= value.size()) {
+      const size_t comma = value.find(',', pos);
+      const size_t end = comma == std::string_view::npos ? value.size() : comma;
+      const std::string_view token = trim_ows_view(value.substr(pos, end - pos));
+      const auto parsed = parse_decimal_size(token);
+      if (!parsed) {
+        contentLengthInvalid_ = true;
+      } else if (!hasContentLength_) {
+        hasContentLength_ = true;
+        contentLength_ = *parsed;
+      } else if (contentLength_ != *parsed) {
+        contentLengthConflict_ = true;
+      }
+      if (comma == std::string_view::npos) {
+        break;
+      }
+      pos = comma + 1;
+    }
+    return;
+  }
+
+  if (iequals(name, "Transfer-Encoding")) {
+    size_t pos = 0;
+    bool sawToken = false;
+    bool lastWasChunked = false;
+    while (pos <= value.size()) {
+      const size_t comma = value.find(',', pos);
+      const size_t end = comma == std::string_view::npos ? value.size() : comma;
+      const std::string_view token = trim_ows_view(value.substr(pos, end - pos));
+      if (token.empty()) {
+        unsupportedTransferEncoding_ = true;
+      } else {
+        sawToken = true;
+        lastWasChunked = iequals(token, "chunked");
+        if (!lastWasChunked) {
+          unsupportedTransferEncoding_ = true;
+        }
+      }
+      if (comma == std::string_view::npos) {
+        break;
+      }
+      pos = comma + 1;
+    }
+    if (!sawToken || !lastWasChunked) {
+      unsupportedTransferEncoding_ = true;
+    }
+    chunked_ = chunked_ || lastWasChunked;
+    return;
+  }
+
+  if (iequals(name, "Expect")) {
+    const std::string_view token = trim_ows_view(value);
+    if (!iequals(token, "100-continue")) {
+      invalidExpect_ = true;
+    } else {
+      expectsContinue_ = true;
+    }
+    return;
+  }
+
+  if (iequals(name, "Connection")) {
+    size_t pos = 0;
+    while (pos <= value.size()) {
+      const size_t comma = value.find(',', pos);
+      const size_t end = comma == std::string_view::npos ? value.size() : comma;
+      const std::string_view token = trim_ows_view(value.substr(pos, end - pos));
+      if (iequals(token, "close")) {
+        current_.connectionClose = true;
+      } else if (iequals(token, "keep-alive")) {
+        current_.connectionKeepAlive = true;
+      }
+      if (comma == std::string_view::npos) {
+        break;
+      }
+      pos = comma + 1;
+    }
+  }
 }
 
 void HttpParserState::ProcessLine() {
@@ -529,15 +665,17 @@ void HttpParserState::ProcessLine() {
       FinishHeaders();
       return;
     }
-    std::string name;
-    std::string value;
+    std::string_view name;
+    std::string_view value;
     HttpParseResult result = parse_field_line(line_, name, value);
-    line_.clear();
     if (result.status != HttpParseStatus::Complete) {
+      line_.clear();
       SetError(result.errorStatus, std::move(result.errorMessage));
       return;
     }
-    add_header(current_, std::move(name), std::move(value));
+    TrackHeader(name, value);
+    add_header(current_, name, value);
+    line_.clear();
     return;
   }
 
@@ -575,15 +713,31 @@ void HttpParserState::ProcessLine() {
       CompleteCurrent();
       return;
     }
-    std::string name;
-    std::string value;
+    std::string_view name;
+    std::string_view value;
     HttpParseResult result = parse_field_line(line_, name, value);
-    line_.clear();
     if (result.status != HttpParseStatus::Complete) {
+      line_.clear();
       SetError(result.errorStatus, std::move(result.errorMessage));
       return;
     }
-    add_trailer(current_, std::move(name), std::move(value));
+    add_trailer(current_, name, value);
+    line_.clear();
+  }
+}
+
+void HttpParserState::AppendLineData(std::string_view data) {
+  if (data.empty()) {
+    return;
+  }
+
+  line_.append(data.data(), data.size());
+  if (state_ == State::StartLine && line_.size() > kMaxStartLineSize) {
+    SetError(414, "URI Too Long");
+  } else if ((state_ == State::HeaderLine || state_ == State::TrailerLine) &&
+             headerBytes_ + line_.size() > kMaxHeaderSectionSize) {
+    SetError(431, state_ == State::HeaderLine ? "Header section too large"
+                                              : "Trailer section too large");
   }
 }
 
@@ -619,34 +773,41 @@ void HttpParserState::ProcessLineByte(char ch) {
 }
 
 void HttpParserState::FinishHeaders() {
-  HttpParseResult host = validate_host(current_);
-  if (host.status != HttpParseStatus::Complete) {
-    SetError(host.errorStatus, std::move(host.errorMessage));
+  if (current_.version == "HTTP/1.1" && hostCount_ != 1) {
+    SetError(400, "HTTP/1.1 requires exactly one Host header");
+    return;
+  }
+  if (hostCount_ > 1) {
+    SetError(400, "Multiple Host headers are not allowed");
+    return;
+  }
+  if (hostEmpty_) {
+    SetError(400, "Host header must not be empty");
     return;
   }
 
-  std::optional<size_t> contentLength;
-  HttpParseResult length =
-      parse_content_length(current_.rawHeaders, contentLength);
-  if (length.status != HttpParseStatus::Complete) {
-    SetError(length.errorStatus, std::move(length.errorMessage));
+  if (contentLengthInvalid_) {
+    SetError(400, "Invalid Content-Length");
     return;
   }
-
-  HttpParseResult transfer =
-      parse_transfer_encoding(current_.rawHeaders, chunked_);
-  if (transfer.status != HttpParseStatus::Complete) {
-    SetError(transfer.errorStatus, std::move(transfer.errorMessage));
+  if (contentLengthConflict_) {
+    SetError(400, "Conflicting Content-Length values");
     return;
   }
-  if (chunked_ && contentLength) {
+  if (hasContentLength_ && contentLength_ > kMaxBodySize) {
+    SetError(413, "Content Too Large");
+    return;
+  }
+  if (unsupportedTransferEncoding_) {
+    SetError(501, "Unsupported transfer encoding");
+    return;
+  }
+  if (chunked_ && hasContentLength_) {
     SetError(400, "Transfer-Encoding and Content-Length conflict");
     return;
   }
-
-  HttpParseResult expect = validate_expect(current_, expectsContinue_);
-  if (expect.status != HttpParseStatus::Complete) {
-    SetError(expect.errorStatus, std::move(expect.errorMessage));
+  if (invalidExpect_) {
+    SetError(417, "Expectation Failed");
     return;
   }
 
@@ -656,7 +817,7 @@ void HttpParserState::FinishHeaders() {
     return;
   }
 
-  fixedRemaining_ = contentLength.value_or(0);
+  fixedRemaining_ = hasContentLength_ ? contentLength_ : 0;
   if (fixedRemaining_ == 0) {
     CompleteCurrent();
     return;
@@ -666,13 +827,12 @@ void HttpParserState::FinishHeaders() {
   continueCandidate_ = expectsContinue_ && !continueSent_;
 }
 
-void HttpParserState::ProcessBytes(std::string_view data) {
+size_t HttpParserState::ProcessBytes(std::string_view data) {
   size_t pos = 0;
   while (pos < data.size()) {
     if (state_ == State::Complete || state_ == State::Error ||
         waitingForContinue_) {
-      pending_.append(data.substr(pos));
-      return;
+      return pos;
     }
 
     if (state_ == State::FixedBody) {
@@ -683,6 +843,7 @@ void HttpParserState::ProcessBytes(std::string_view data) {
       pos += take;
       if (fixedRemaining_ == 0) {
         CompleteCurrent();
+        return pos;
       }
       continue;
     }
@@ -700,19 +861,99 @@ void HttpParserState::ProcessBytes(std::string_view data) {
       continue;
     }
 
+    if (state_ == State::StartLine || state_ == State::HeaderLine ||
+        state_ == State::ChunkSize || state_ == State::TrailerLine) {
+      if (sawCr_) {
+        sawCr_ = false;
+        if (data[pos++] != '\n') {
+          SetError(400, "Invalid line ending");
+          return pos;
+        }
+        ProcessLine();
+        if (state_ == State::Complete || state_ == State::Error ||
+            waitingForContinue_) {
+          return pos;
+        }
+        if (continueCandidate_ && pos == data.size() &&
+            (state_ == State::FixedBody || state_ == State::ChunkSize)) {
+          waitingForContinue_ = true;
+          continueCandidate_ = false;
+          return pos;
+        }
+        if (continueCandidate_ && pos < data.size()) {
+          continueCandidate_ = false;
+        }
+        continue;
+      }
+
+      const char *begin = data.data() + pos;
+      const size_t remaining = data.size() - pos;
+      const char *cr = static_cast<const char *>(std::memchr(begin, '\r', remaining));
+      const char *lf = static_cast<const char *>(std::memchr(begin, '\n', remaining));
+      const char *lineEnd = nullptr;
+      if (cr && lf) {
+        lineEnd = cr < lf ? cr : lf;
+      } else {
+        lineEnd = cr ? cr : lf;
+      }
+
+      if (!lineEnd) {
+        AppendLineData(std::string_view(begin, remaining));
+        return data.size();
+      }
+
+      const size_t prefixSize = static_cast<size_t>(lineEnd - begin);
+      AppendLineData(std::string_view(begin, prefixSize));
+      pos += prefixSize + 1;
+      if (state_ == State::Error) {
+        return pos;
+      }
+
+      if (*lineEnd == '\n') {
+        SetError(400, "Invalid line ending");
+        return pos;
+      }
+
+      if (pos == data.size()) {
+        sawCr_ = true;
+        return pos;
+      }
+
+      if (data[pos++] != '\n') {
+        SetError(400, "Invalid line ending");
+        return pos;
+      }
+
+      ProcessLine();
+      if (state_ == State::Complete || state_ == State::Error ||
+          waitingForContinue_) {
+        return pos;
+      }
+      if (continueCandidate_ && pos == data.size() &&
+          (state_ == State::FixedBody || state_ == State::ChunkSize)) {
+        waitingForContinue_ = true;
+        continueCandidate_ = false;
+        return pos;
+      }
+      if (continueCandidate_ && pos < data.size()) {
+        continueCandidate_ = false;
+      }
+      continue;
+    }
+
     char ch = data[pos++];
     if (state_ == State::ChunkDataCrlf) {
       if (!chunkNeedsLf_) {
         if (ch != '\r') {
           SetError(400, "Invalid chunk data terminator");
-          continue;
+          return pos;
         }
         chunkNeedsLf_ = true;
         continue;
       }
       if (ch != '\n') {
         SetError(400, "Invalid chunk data terminator");
-        continue;
+        return pos;
       }
       chunkNeedsLf_ = false;
       state_ = State::ChunkSize;
@@ -720,23 +961,37 @@ void HttpParserState::ProcessBytes(std::string_view data) {
     }
 
     ProcessLineByte(ch);
+    if (state_ == State::Complete || state_ == State::Error ||
+        waitingForContinue_) {
+      return pos;
+    }
     if (continueCandidate_ && pos == data.size() &&
         (state_ == State::FixedBody || state_ == State::ChunkSize)) {
       waitingForContinue_ = true;
       continueCandidate_ = false;
-      return;
+      return pos;
     }
     if (continueCandidate_ && pos < data.size()) {
       continueCandidate_ = false;
     }
   }
+  return pos;
 }
 
-void HttpParserState::Append(std::string_view data) { ProcessBytes(data); }
+void HttpParserState::Append(std::string_view data) {
+  const size_t consumed = ProcessBytes(data);
+  if (consumed < data.size()) {
+    pending_.append(data.substr(consumed));
+  }
+}
+
+size_t HttpParserState::Consume(std::string_view data) {
+  return ProcessBytes(data);
+}
 
 bool HttpParserState::Empty() const {
   return state_ == State::StartLine && line_.empty() && pending_.empty() &&
-         !complete_ && !sawCr_;
+         !sawCr_;
 }
 
 void HttpParserState::MarkContinueSent() {
@@ -747,9 +1002,8 @@ void HttpParserState::MarkContinueSent() {
 }
 
 HttpParseResult HttpParserState::ParseNext(RequestData &request) {
-  if (complete_) {
-    request = std::move(*complete_);
-    complete_.reset();
+  if (state_ == State::Complete) {
+    request = std::move(current_);
     ResetForNext();
     return Complete();
   }
@@ -765,10 +1019,12 @@ HttpParseResult HttpParserState::ParseNext(RequestData &request) {
   if (!pending_.empty()) {
     std::string data = std::move(pending_);
     pending_.clear();
-    ProcessBytes(data);
-    if (complete_) {
-      request = std::move(*complete_);
-      complete_.reset();
+    const size_t consumed = ProcessBytes(data);
+    if (consumed < data.size()) {
+      pending_.append(std::string_view(data).substr(consumed));
+    }
+    if (state_ == State::Complete) {
+      request = std::move(current_);
       ResetForNext();
       return Complete();
     }
@@ -814,8 +1070,9 @@ CoFuture<RequestReadStatus> HttpRequestParser::ReadRequest(
     }
 
     const size_t available = iterator_.Available();
-    state_.Append(std::string_view(iterator_.CurrentPtr(), available));
-    iterator_.Advance(available);
+    const size_t consumed =
+        state_.Consume(std::string_view(iterator_.CurrentPtr(), available));
+    iterator_.Advance(consumed);
   }
 }
 
