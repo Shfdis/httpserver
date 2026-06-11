@@ -259,16 +259,7 @@ HttpParseResult parse_field_line(std::string_view line, std::string_view &name,
 
 void add_header(RequestData &request, std::string_view name,
                 std::string_view value) {
-  std::string storedName(name);
-  std::string storedValue(value);
-  request.rawHeaders.emplace_back(storedName, storedValue);
-  auto existing = request.headers.find(storedName);
-  if (existing == request.headers.end()) {
-    request.headers.emplace(std::move(storedName), std::move(storedValue));
-  } else {
-    existing->second += ", ";
-    existing->second += storedValue;
-  }
+  request.rawHeaders.emplace_back(std::string(name), std::string(value));
 }
 
 void add_trailer(RequestData &request, std::string_view name,
@@ -300,11 +291,7 @@ void parse_query_params(RequestData &request) {
           eq == std::string_view::npos ? std::string_view()
                                        : part.substr(eq + 1);
       if (!name.empty()) {
-        auto [it, inserted] =
-            request.params.emplace(std::string(name), std::string(value));
-        if (!inserted) {
-          it->second.assign(value);
-        }
+        request.params.Set(name, value);
       }
     }
     if (amp == std::string::npos) {
@@ -492,26 +479,20 @@ std::optional<std::string> RequestData::Header(std::string_view name) const {
   if (!result.empty()) {
     return result;
   }
-
-  for (const auto &[fieldName, value] : headers) {
-    if (iequals(fieldName, name)) {
-      return value;
-    }
-  }
   return std::nullopt;
 }
 
 HttpParserState::HttpParserState() {
   line_.reserve(256);
   pending_.reserve(256);
-  current_.headers.reserve(8);
+  current_.params.reserve(4);
   current_.rawHeaders.reserve(8);
 }
 
 void HttpParserState::ResetForNext() {
   state_ = State::StartLine;
-  current_ = RequestData{};
-  current_.headers.reserve(8);
+  current_.Clear();
+  current_.params.reserve(4);
   current_.rawHeaders.reserve(8);
   line_.clear();
   sawCr_ = false;
@@ -1003,7 +984,7 @@ void HttpParserState::MarkContinueSent() {
 
 HttpParseResult HttpParserState::ParseNext(RequestData &request) {
   if (state_ == State::Complete) {
-    request = std::move(current_);
+    std::swap(request, current_);
     ResetForNext();
     return Complete();
   }
@@ -1024,7 +1005,7 @@ HttpParseResult HttpParserState::ParseNext(RequestData &request) {
       pending_.append(std::string_view(data).substr(consumed));
     }
     if (state_ == State::Complete) {
-      request = std::move(current_);
+      std::swap(request, current_);
       ResetForNext();
       return Complete();
     }

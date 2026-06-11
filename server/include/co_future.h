@@ -2,10 +2,10 @@
 
 #include <atomic>
 #include <coroutine>
+#include <cstdint>
 #include <exception>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <cassert>
@@ -14,6 +14,8 @@
 #include <utility>
 
 namespace HTTP {
+
+class IOUring;
 
 template <typename T>
 class CoPromise;
@@ -29,20 +31,75 @@ class CoFuture {
   friend class CoPromise;
   template <typename>
   friend class CoFutureAwaiter;
+  friend class IOUring;
+
+  using StoredValue = std::conditional_t<std::is_void_v<T>, bool, T>;
 
   struct ControlBlock {
-    std::mutex mutex;
     std::atomic_bool ready{false};
+    std::atomic_bool satisfied{false};
     std::atomic_bool futureRetrieved{false};
+    std::atomic_uint waiters{0};
     std::conditional_t<std::is_void_v<T>, bool, std::optional<T>> value;
     std::exception_ptr exception;
     using Callback = std::function<void()>;
-    std::atomic<std::shared_ptr<Callback>> continuation{nullptr};
+    std::atomic_uintptr_t continuation{0};
   };
 
   std::shared_ptr<ControlBlock> control_;
 
   explicit CoFuture(std::shared_ptr<ControlBlock> control) : control_(std::move(control)) {}
+
+  static constexpr uintptr_t kCallbackTag = 1;
+
+  static void RunContinuation(uintptr_t continuation) {
+    if (continuation == 0) {
+      return;
+    }
+    if ((continuation & kCallbackTag) != 0) {
+      std::unique_ptr<typename ControlBlock::Callback> callback(
+          reinterpret_cast<typename ControlBlock::Callback *>(
+              continuation & ~kCallbackTag));
+      (*callback)();
+      return;
+    }
+    auto handle =
+        std::coroutine_handle<>::from_address(reinterpret_cast<void *>(continuation));
+    if (handle && !handle.done()) {
+      handle.resume();
+    }
+  }
+
+  static void PublishReady(const std::shared_ptr<ControlBlock> &control) {
+    control->ready.store(true, std::memory_order_release);
+    auto continuation = control->continuation.exchange(0, std::memory_order_acq_rel);
+    if (control->waiters.load(std::memory_order_acquire) > 0) {
+      control->ready.notify_all();
+    }
+    RunContinuation(continuation);
+  }
+
+  static void CompleteValue(const std::shared_ptr<ControlBlock> &control,
+                            StoredValue value = StoredValue{}) {
+    if (control->satisfied.exchange(true, std::memory_order_acq_rel)) {
+      throw std::runtime_error("Promise already satisfied");
+    }
+    if constexpr (std::is_void_v<T>) {
+      control->value = true;
+    } else {
+      control->value = std::move(value);
+    }
+    PublishReady(control);
+  }
+
+  static void CompleteException(const std::shared_ptr<ControlBlock> &control,
+                                std::exception_ptr exception) {
+    if (control->satisfied.exchange(true, std::memory_order_acq_rel)) {
+      throw std::runtime_error("Promise already satisfied");
+    }
+    control->exception = std::move(exception);
+    PublishReady(control);
+  }
 
 public:
   CoFuture() = default;
@@ -58,9 +115,12 @@ public:
       throw std::logic_error("Invalid future");
     }
 
-    if (!control_->ready.load(std::memory_order_acquire)) {
-      control_->mutex.lock();
-      control_->mutex.unlock();
+    while (!control_->ready.load(std::memory_order_acquire)) {
+      control_->waiters.fetch_add(1, std::memory_order_acq_rel);
+      if (!control_->ready.load(std::memory_order_acquire)) {
+        control_->ready.wait(false, std::memory_order_acquire);
+      }
+      control_->waiters.fetch_sub(1, std::memory_order_acq_rel);
     }
 
     if (control_->exception) {
@@ -93,25 +153,30 @@ public:
         nextPromise->SetException(std::current_exception());
       }
     };
-    auto callback = std::make_shared<typename ControlBlock::Callback>(std::move(run));
+    auto callback =
+        std::make_unique<typename ControlBlock::Callback>(std::move(run));
     if (control_->ready.load(std::memory_order_acquire)) {
       (*callback)();
       return nextFuture;
     }
 
-    std::shared_ptr<typename ControlBlock::Callback> expected = nullptr;
-    if (!control_->continuation.compare_exchange_strong(expected, callback,
+    uintptr_t raw = reinterpret_cast<uintptr_t>(callback.get());
+    assert((raw & kCallbackTag) == 0);
+    raw |= kCallbackTag;
+    uintptr_t expected = 0;
+    if (!control_->continuation.compare_exchange_strong(expected, raw,
                                                         std::memory_order_acq_rel,
                                                         std::memory_order_acquire)) {
       throw std::runtime_error("Tried to set the subscriber second time");
     }
+    callback.release();
 
     if (control_->ready.load(std::memory_order_acquire)) {
-      expected = callback;
-      if (control_->continuation.compare_exchange_strong(expected, nullptr,
+      expected = raw;
+      if (control_->continuation.compare_exchange_strong(expected, 0,
                                                          std::memory_order_acq_rel,
                                                          std::memory_order_acquire)) {
-        (*callback)();
+        RunContinuation(raw);
       }
     } 
     return nextFuture;
@@ -123,13 +188,12 @@ class CoPromise {
   using ControlBlock = typename CoFuture<T>::ControlBlock;
 
   std::shared_ptr<ControlBlock> control_;
-  std::unique_lock<std::mutex> producerLock_;
 
   template <typename>
   friend class CoFuture;
 
 public:
-  CoPromise() : control_(std::make_shared<ControlBlock>()), producerLock_(control_->mutex) {}
+  CoPromise() : control_(std::make_shared<ControlBlock>()) {}
 
   CoPromise(const CoPromise &) = delete;
   CoPromise &operator=(const CoPromise &) = delete;
@@ -152,35 +216,13 @@ public:
   CoFuture<T> getFuture() { return GetFuture(); }
 
   void Set(T value) {
-    if (!producerLock_.owns_lock()) {
-      throw std::runtime_error("Promise already satisfied");
-    }
-
-    control_->value = std::move(value);
-    control_->ready.store(true, std::memory_order_release);
-    auto continuation = control_->continuation.exchange(nullptr, std::memory_order_acq_rel);
-    producerLock_.unlock();
-
-    if (continuation) {
-      (*continuation)();
-    }
+    CoFuture<T>::CompleteValue(control_, std::move(value));
   }
 
   void set(T value) { Set(std::move(value)); }
 
   void SetException(std::exception_ptr exception) {
-    if (!producerLock_.owns_lock()) {
-      throw std::runtime_error("Promise already satisfied");
-    }
-
-    control_->exception = std::move(exception);
-    control_->ready.store(true, std::memory_order_release);
-    auto continuation = control_->continuation.exchange(nullptr, std::memory_order_acq_rel);
-    producerLock_.unlock();
-
-    if (continuation) {
-      (*continuation)();
-    }
+    CoFuture<T>::CompleteException(control_, std::move(exception));
   }
 
   void setException(std::exception_ptr exception) { SetException(std::move(exception)); }
@@ -191,10 +233,9 @@ class CoPromise<void> {
   using ControlBlock = typename CoFuture<void>::ControlBlock;
 
   std::shared_ptr<ControlBlock> control_;
-  std::unique_lock<std::mutex> producerLock_;
 
 public:
-  CoPromise() : control_(std::make_shared<ControlBlock>()), producerLock_(control_->mutex) {}
+  CoPromise() : control_(std::make_shared<ControlBlock>()) {}
 
   CoPromise(const CoPromise &) = delete;
   CoPromise &operator=(const CoPromise &) = delete;
@@ -217,30 +258,13 @@ public:
   CoFuture<void> getFuture() { return GetFuture(); }
 
   void Set() {
-    if (!producerLock_.owns_lock()) {
-      throw std::runtime_error("Promise already satisfied");
-    }
-    control_->ready.store(true, std::memory_order_release);
-    auto continuation = control_->continuation.exchange(nullptr, std::memory_order_acq_rel);
-    producerLock_.unlock();
-    if (continuation) {
-      (*continuation)();
-    }
+    CoFuture<void>::CompleteValue(control_, true);
   }
 
   void set() { Set(); }
 
   void SetException(std::exception_ptr exception) {
-    if (!producerLock_.owns_lock()) {
-      throw std::runtime_error("Promise already satisfied");
-    }
-    control_->exception = std::move(exception);
-    control_->ready.store(true, std::memory_order_release);
-    auto continuation = control_->continuation.exchange(nullptr, std::memory_order_acq_rel);
-    producerLock_.unlock();
-    if (continuation) {
-      (*continuation)();
-    }
+    CoFuture<void>::CompleteException(control_, std::move(exception));
   }
 
   void setException(std::exception_ptr exception) { SetException(std::move(exception)); }
@@ -261,27 +285,22 @@ public:
   }
 
   bool await_suspend(std::coroutine_handle<> awaiting) {
-    auto callback = std::make_shared<typename ControlBlock::Callback>(
-        [awaiting]() mutable {
-          if (awaiting && !awaiting.done()) {
-            awaiting.resume();
-          }
-        });
-
     if (control_->ready.load(std::memory_order_acquire)) {
       return false;
     }
 
-    std::shared_ptr<typename ControlBlock::Callback> expected = nullptr;
-    if (!control_->continuation.compare_exchange_strong(expected, callback,
+    uintptr_t raw = reinterpret_cast<uintptr_t>(awaiting.address());
+    assert((raw & CoFuture<T>::kCallbackTag) == 0);
+    uintptr_t expected = 0;
+    if (!control_->continuation.compare_exchange_strong(expected, raw,
                                                         std::memory_order_acq_rel,
                                                         std::memory_order_acquire)) {
       throw std::runtime_error("Tried to set the subscriber second time");
     }
 
     if (control_->ready.load(std::memory_order_acquire)) {
-      expected = callback;
-      if (control_->continuation.compare_exchange_strong(expected, nullptr,
+      expected = raw;
+      if (control_->continuation.compare_exchange_strong(expected, 0,
                                                          std::memory_order_acq_rel,
                                                          std::memory_order_acquire)) {
         return false;

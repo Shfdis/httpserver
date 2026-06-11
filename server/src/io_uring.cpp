@@ -19,6 +19,18 @@ IOUring::IOUring() {
   }
 }
 
+IOUring::SqeData *IOUring::AcquireSqeData() {
+  for (size_t i = 0; i < sqeData_.size(); ++i) {
+    SqeData &data = sqeData_[(nextSqeData_ + i) % sqeData_.size()];
+    if (!data.inUse) {
+      data.inUse = true;
+      nextSqeData_ = (nextSqeData_ + i + 1) % sqeData_.size();
+      return &data;
+    }
+  }
+  return nullptr;
+}
+
 void IOUring::AddEntries() {
   size_t fdsSize = 0;
   for (int count = 0; count < QUEUE_DEPTH && !queue_.empty(); count++) {
@@ -30,13 +42,19 @@ void IOUring::AddEntries() {
       queue_.push_front(std::move(entry));
       break;
     }
-    
-    SqeData *sqeData = new SqeData{
-        std::move(entry.complete), std::move(entry.writeData), entry.writeOffset, entry.writeLen};
+
+    SqeData *sqeData = AcquireSqeData();
+    if (sqeData == nullptr) {
+      queue_.push_front(std::move(entry));
+      break;
+    }
+    sqeData->control = std::move(entry.control);
+    sqeData->writeData = entry.writeData;
+    sqeData->writeOffset = entry.writeOffset;
+    sqeData->writeLen = entry.writeLen;
     
     if (entry.type == IOUring::READ) [[likely]] {
-      io_uring_prep_read(sqEntry, entry.fd, entry.toRead.value(),
-                         kReadBufferSize, 0);
+      io_uring_prep_read(sqEntry, entry.fd, entry.toRead, kReadBufferSize, 0);
     } else if (entry.type == IOUring::ACCEPT) {
       io_uring_prep_accept(sqEntry, entry.fd, nullptr, nullptr, 0);
     } else [[likely]] {
@@ -75,7 +93,8 @@ void IOUring::Poll() {
 }
 
 void IOUring::Write(int fileDescriptor, std::string_view data, size_t offset,
-                    size_t len, std::function<void(int)> complete) {
+                    size_t len,
+                    std::shared_ptr<CoFuture<int>::ControlBlock> control) {
   if (fileDescriptor < 0) {
     throw std::runtime_error("Invalid file descriptor");
   }
@@ -85,14 +104,14 @@ void IOUring::Write(int fileDescriptor, std::string_view data, size_t offset,
   entry.writeData = data;
   entry.writeOffset = offset;
   entry.writeLen = len;
-  entry.complete = std::move(complete);
+  entry.control = std::move(control);
   queue_.push_back(std::move(entry));
   AddEntries();
 }
 
 void IOUring::Read(int fileDescriptor,
                    std::array<char, kReadBufferSize> &buffer,
-                   std::function<void(int)> complete) {
+                   std::shared_ptr<CoFuture<int>::ControlBlock> control) {
   if (fileDescriptor < 0) {
     throw std::runtime_error("Invalid file descriptor");
   }
@@ -100,49 +119,44 @@ void IOUring::Read(int fileDescriptor,
   entry.type = IOUring::READ;
   entry.fd = fileDescriptor;
   entry.toRead = buffer.begin();
-  entry.complete = std::move(complete);
+  entry.control = std::move(control);
   queue_.push_back(entry);
 }
 
 CoFuture<int> IOUring::ReadAsync(
     int fileDescriptor, std::array<char, kReadBufferSize> &buffer) {
-  auto promise = std::make_shared<CoPromise<int>>();
-  auto future = promise->GetFuture();
-  Read(fileDescriptor, buffer, [promise](int result) {
-    promise->Set(result);
-  });
-  return future;
+  auto control = std::make_shared<CoFuture<int>::ControlBlock>();
+  control->futureRetrieved.store(true, std::memory_order_release);
+  Read(fileDescriptor, buffer, control);
+  return CoFuture<int>(std::move(control));
 }
 
-void IOUring::Accept(int fileDescriptor, std::function<void(int)> complete) {
+void IOUring::Accept(
+    int fileDescriptor, std::shared_ptr<CoFuture<int>::ControlBlock> control) {
   if (fileDescriptor < 0) {
     throw std::runtime_error("Invalid file descriptor");
   }
   Entry entry;
   entry.type = IOUring::ACCEPT;
   entry.fd = fileDescriptor;
-  entry.complete = std::move(complete);
+  entry.control = std::move(control);
   queue_.push_back(entry);
   AddEntries();
 }
 
 CoFuture<int> IOUring::AcceptAsync(int fileDescriptor) {
-  auto promise = std::make_shared<CoPromise<int>>();
-  auto future = promise->GetFuture();
-  Accept(fileDescriptor, [promise](int result) {
-    promise->Set(result);
-  });
-  return future;
+  auto control = std::make_shared<CoFuture<int>::ControlBlock>();
+  control->futureRetrieved.store(true, std::memory_order_release);
+  Accept(fileDescriptor, control);
+  return CoFuture<int>(std::move(control));
 }
 
 CoFuture<int> IOUring::WriteAsync(int fileDescriptor, std::string_view data,
                                      size_t offset, size_t len) {
-  auto promise = std::make_shared<CoPromise<int>>();
-  auto future = promise->GetFuture();
-  Write(fileDescriptor, data, offset, len, [promise](int result) {
-    promise->Set(result);
-  });
-  return future;
+  auto control = std::make_shared<CoFuture<int>::ControlBlock>();
+  control->futureRetrieved.store(true, std::memory_order_release);
+  Write(fileDescriptor, data, offset, len, control);
+  return CoFuture<int>(std::move(control));
 }
 
 void IOUring::ProcessCalls() {
@@ -164,13 +178,16 @@ void IOUring::ProcessCalls() {
   }
   
   int result = cqEntry->res;
-  auto complete = std::move(sqeData->complete);
+  auto control = std::move(sqeData->control);
   
-  delete sqeData;
+  sqeData->writeData = {};
+  sqeData->writeOffset = 0;
+  sqeData->writeLen = 0;
+  sqeData->inUse = false;
   io_uring_cqe_seen(&ring_, cqEntry);
   
-  if (complete) {
-    complete(result);
+  if (control) {
+    CoFuture<int>::CompleteValue(control, result);
   }
 }
 
