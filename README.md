@@ -71,21 +71,21 @@ cd ../benchmarks
 DURATION=30s THREADS=4 CONNECTIONS=100 ./benchmark.sh
 ```
 
-Output (non-ASAN Release build):
+Output (non-ASAN Release build, generated Thu Jun 11 20:26:47 MSK 2026):
 
 #### GET /echo
 
 | Server | Latency avg | Latency stdev | Latency max | +/- stdev | Requests/sec | Transfer/sec |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| C++ coroutine server | 132.16us | 66.78us | 4.97ms | 80.82% | 439792.17 | 29.78MB |
-| Rust Tokio server | 150.12us | 119.34us | 5.53ms | 94.01% | 506996.06 | 40.61MB |
+| C++ coroutine server | 100.04us | 50.46us | 5.11ms | 87.62% | 562133.10 | 45.03MB |
+| Rust Tokio server | 131.02us | 105.52us | 4.47ms | 94.77% | 559214.10 | 44.80MB |
 
 #### POST /echo
 
 | Server | Latency avg | Latency stdev | Latency max | +/- stdev | Requests/sec | Transfer/sec |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| C++ coroutine server | 149.98us | 77.14us | 5.27ms | 81.01% | 402624.34 | 29.57MB |
-| Rust Tokio server | 168.98us | 138.11us | 5.80ms | 91.79% | 465844.80 | 39.98MB |
+| C++ coroutine server | 107.32us | 47.45us | 3.89ms | 84.16% | 519114.00 | 44.56MB |
+| Rust Tokio server | 157.70us | 134.03us | 7.43ms | 92.10% | 510284.18 | 43.80MB |
 
 ## Pull Request Checks
 

@@ -317,6 +317,20 @@ CoFuture<void> Server::WriteResponse(IOUring &ring, int connectionFD,
                                      const RequestData &request,
                                      bool keepAlive, std::string &buffer) {
   const unsigned short status = NormalizeStatus(data.status);
+  if (status == 200 && keepAlive && request.version != "HTTP/1.0" &&
+      request.method != HEAD && data.headers.empty()) {
+    buffer.clear();
+    buffer.reserve(72 + data.body.size());
+    buffer += "HTTP/1.1 200 OK\r\nDate: ";
+    buffer += HttpDate();
+    buffer += "\r\nContent-Length: ";
+    AppendUnsigned(buffer, data.body.size());
+    buffer += "\r\n\r\n";
+    buffer += data.body;
+    co_await WriteRaw(ring, connectionFD, buffer);
+    co_return;
+  }
+
   const bool sendBody = ShouldSendBody(status, request.method);
   buffer.clear();
   buffer.reserve(160 + data.body.size());
@@ -362,12 +376,14 @@ CoFuture<void> Server::WriteResponse(IOUring &ring, int connectionFD,
 
 CoFuture<void> Server::Process(IOUring &ring, int connectionFD) {
   HttpRequestParser parser(ring, connectionFD);
+  RequestData request;
+  ResponseData response;
   std::string writeBuffer;
   writeBuffer.reserve(256);
 
   while (true) {
-    RequestData request;
-    ResponseData response;
+    request.Clear();
+    response.Clear();
     bool keepAlive = true;
     bool mustClose = false;
 

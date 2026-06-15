@@ -1,0 +1,33 @@
+Start testing: Jun 11 20:24 MSK
+----------------------------------------------------------
+1/2 Testing: http_parser_test
+1/2 Test: http_parser_test
+Command: "/home/shfdis/httpserver/server/tests/http_parser_test"
+Directory: /home/shfdis/httpserver/server
+"http_parser_test" start time: Jun 11 20:24 MSK
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"http_parser_test" end time: Jun 11 20:24 MSK
+"http_parser_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/2 Testing: http_integration_test
+2/2 Test: http_integration_test
+Command: "/home/shfdis/httpserver/server/tests/http_integration_test"
+Directory: /home/shfdis/httpserver/server
+"http_integration_test" start time: Jun 11 20:24 MSK
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"http_integration_test" end time: Jun 11 20:24 MSK
+"http_integration_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Jun 11 20:24 MSK
